@@ -82,6 +82,7 @@ def download_hls(url: str, headers: dict, out_path: str = "downloaded_lecture.ts
         print(f"[+] Variant chuna: bandwidth={bw} -> {media_url[:120]}", flush=True)
 
     media = _get(session, media_url, headers).decode("utf-8", "replace")
+    print(f"[*] Media playlist (first 1200 chars):\n{media[:1200]}\n", flush=True)
     lines = _lines(media)
 
     key_uri, key_iv = None, None
@@ -114,8 +115,8 @@ def download_hls(url: str, headers: dict, out_path: str = "downloaded_lecture.ts
 
     key = None
     if key_uri:
-        print(f"[+] Encrypted stream (AES-128), key fetch: {key_uri[:100]}", flush=True)
-        key = _get(session, key_uri, headers)
+        print(f"[+] Encrypted stream (AES-128), key fetch: {key_uri[:160]}", flush=True)
+        key = fetch_key_with_variants(session, key_uri, headers)
 
     parts = [None] * len(segments)
     done = {"n": 0}
@@ -170,6 +171,35 @@ def download_hls(url: str, headers: dict, out_path: str = "downloaded_lecture.ts
     else:
         print("[*] ffmpeg nahi mila — .ts file hi final (VLC/player me chalega)", flush=True)
     return out_path
+
+
+def fetch_key_with_variants(session, key_url: str, base_headers: dict):
+    """Key endpoint (api.penpencil.co) 403 deta hai — header combos try karo."""
+    from urllib.parse import urlparse
+
+    host = urlparse(key_url).netloc
+    variants = [
+        ("as-is (app headers)", dict(base_headers)),
+        ("penpencil referer", {**base_headers, "Referer": "https://www.penpencil.co/",
+                               "Origin": "https://www.penpencil.co"}),
+        ("no cookie", {k: v for k, v in base_headers.items() if k.lower() != "cookie"}),
+        ("ua only", {"User-Agent": base_headers.get("User-Agent", "Mozilla/5.0")}),
+        ("app referer no origin", {"User-Agent": base_headers.get("User-Agent", "Mozilla/5.0"),
+                                   "Referer": "https://app.studyratna.org/"}),
+        ("penpencil origin + app referer", {**base_headers,
+                                            "Origin": "https://www.penpencil.co"}),
+    ]
+    for label, hdrs in variants:
+        try:
+            r = session.get(key_url, headers=hdrs, timeout=30)
+            print(f"[*] key try [{label}] -> HTTP {r.status_code} ({len(r.content)} bytes) "
+                  f"host={host}", flush=True)
+            if r.status_code == 200 and len(r.content) in (16, 32):
+                print(f"[+] KEY mil gaya ({label})", flush=True)
+                return r.content
+        except Exception as e:
+            print(f"[*] key try [{label}] -> error {str(e)[:80]}", flush=True)
+    raise RuntimeError("HLS decryption key nahi mila (saare header combos 403)")
 
 
 def _has_ffmpeg() -> bool:
