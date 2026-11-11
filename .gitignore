@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+downloaded_lecture.*
+screenshot.png
+page.html
+page_text.txt
+network.log
+api_responses.log
+inspect_report.md
+summary.md
