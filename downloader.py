@@ -375,7 +375,11 @@ def fetch_manifest_video_url(data: dict):
 
 async def browser_fallback() -> str | None:
     """Normal browser se stream dhoondho (token flow fail hone par)."""
-    from playwright.async_api import async_playwright
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        print("[*] playwright installed nahi hai — browser fallback skip.", flush=True)
+        return None
 
     stream_url = None
     embed_url = None

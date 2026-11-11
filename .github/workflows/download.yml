@@ -5,8 +5,7 @@ on:
     inputs:
       target_url:
         description: 'StudyRatna / Lecture URL'
-        required: false
-        default: 'https://app.studyratna.org/'
+        required: true
         type: string
       mode:
         description: 'download = lecture download karo, inspect = site ka JS/API analysis'
@@ -16,10 +15,16 @@ on:
         options:
           - download
           - inspect
+      with_browser:
+        description: 'Browser fallback bhi install karo (slow, sirf normal sites ke liye)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   download:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     permissions:
       contents: write
 
@@ -30,37 +35,21 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
-
-    - name: Fix DNS and Network
-      run: |
-        echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
-        for i in {1..3}; do sudo apt-get update && break || sleep 5; done
-
-    # Playwright browser cache — install fast hoga, token expire hone se pehle
-    # downloader start ho jayega (pehli run slow, uske baad fast).
-    - name: Cache Playwright browsers
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/ms-playwright
-        key: playwright-${{ runner.os }}-chromium-v1
-        restore-keys: |
-          playwright-${{ runner.os }}-
+        python-version: '3.11'
 
     - name: Install Dependencies
+      timeout-minutes: 10
       run: |
-        set -x
-        pip install --upgrade pip
-        pip install playwright yt-dlp pycryptodome requests
-        # ffmpeg usually preinstalled; install karo par fail ho to rukna nahi
-        if ! command -v ffmpeg >/dev/null 2>&1; then
-          (sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg) \
-            || (sleep 10 && sudo apt-get install -y --no-install-recommends ffmpeg) \
-            || echo "WARN: ffmpeg install fail"
+        python -m pip install --upgrade pip
+        pip install yt-dlp pycryptodome requests
+        # ffmpeg runner par usually hota hai; na ho to install (best-effort)
+        ffmpeg -version 2>/dev/null | head -1 || (
+          sudo apt-get update -qq && timeout 240 sudo apt-get install -y -qq ffmpeg
+        ) || echo "WARN: ffmpeg missing (HLS merge fail ho sakta hai)"
+        if [ "${{ inputs.with_browser }}" = "true" ]; then
+          pip install playwright
+          timeout 420 playwright install --with-deps chromium || echo "WARN: browser install fail"
         fi
-        ffmpeg -version 2>/dev/null | head -1 || echo "WARN: ffmpeg missing"
-        # Browser sirf fallback ke liye — fail ho to bhi downloader chale
-        playwright install --with-deps chromium || playwright install chromium || echo "WARN: playwright browser fail"
 
     - name: Run Site Inspector
       if: inputs.mode == 'inspect'
@@ -99,42 +88,24 @@ jobs:
           lecture_info.txt
         if-no-files-found: ignore
 
-    # Debug summary GitHub Release notes me post karo — token REDACTED hota hai.
-    # (Repo me Issues band hain aur log-artifact download har jagah possible nahi,
-    #  isliye Release notes use karte hain — API se sab padh sakte hain.)
+    # Debug summary GitHub Release notes me daal do — ise API se padha ja sakta hai
+    # aur token/signature hamesha REDACTED rehta hai.
     - name: Report Debug Summary as Release
       if: always()
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Safety: token kabhi release notes me na jaye
-        for f in network.log api_responses.log page.html page_text.txt; do
+        for f in network.log api_responses.log page.html page_text.txt run.log; do
           [ -f "$f" ] && sed -i -E 's/(playerToken=)[A-Za-z0-9%._-]+/\1REDACTED/g; s/[0-9a-f]{64,}:[0-9a-f]{64,}/TOKEN_REDACTED/g' "$f" || true
         done
         {
           echo "## Debug Report — Run [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
           echo ""
-          echo "### Run log (run.log, last 250 lines)"
+          echo "### Run log (run.log, last 200 lines)"
           echo '```'
-          tail -n 250 run.log 2>/dev/null || echo "(no run.log)"
-          echo '```'
-          echo ""
-          echo "### Page text (page_text.txt, first 3000 chars)"
-          echo '```'
-          head -c 3000 page_text.txt 2>/dev/null || echo "(no page_text.txt)"
-          echo '```'
-          echo ""
-          echo "### Network requests (network.log, first 150 lines)"
-          echo '```'
-          head -n 150 network.log 2>/dev/null || echo "(no network.log)"
-          echo '```'
-          echo ""
-          echo "### API responses (api_responses.log, first 150 lines)"
-          echo '```'
-          head -n 150 api_responses.log 2>/dev/null || echo "(no api_responses.log)"
+          tail -n 200 run.log 2>/dev/null || echo "(no run.log)"
           echo '```'
         } > summary.md
-        # Agar inspect mode chala hai to report hi summary banao
         if [ -f inspect_report.md ]; then
           cp inspect_report.md summary.md
         fi
