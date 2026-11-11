@@ -15,6 +15,7 @@ on:
         options:
           - download
           - inspect
+          - diag
       with_browser:
         description: 'Browser fallback bhi install karo (slow, sirf normal sites ke liye)'
         required: false
@@ -50,6 +51,21 @@ jobs:
           pip install playwright
           timeout 420 playwright install --with-deps chromium || echo "WARN: browser install fail"
         fi
+
+    - name: Run Key Diagnostic
+      if: inputs.mode == 'diag'
+      run: |
+        python - <<'PY' > diag_args.sh
+        import downloader as d
+        from urllib.parse import urlparse, parse_qs
+        import os
+        url = os.environ["TARGET_URL"]
+        data = d.decrypt_player_token(parse_qs(urlparse(url).query)["playerToken"][0])
+        print(f"PLAYLIST='{data['videoUrl']}'")
+        print(f"COOKIE='{data['cookie']}'")
+        PY
+        . ./diag_args.sh
+        python diag_key.py "$PLAYLIST" "$COOKIE" 2>&1 | tee -a run.log
 
     - name: Run Site Inspector
       if: inputs.mode == 'inspect'
