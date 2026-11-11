@@ -1,7 +1,11 @@
 """
-StudyRatna site inspector (debug only).
-Page + saare JS chunks download karke playerToken / decryption / video URL
-se related code greps karta hai, taaki pata chale player kaise chalta hai.
+StudyRatna reverse-engineering inspector (debug only).
+
+Targeted dumps:
+  1. decryptForWeb / decrypt module scope (AES key chahiye)
+  2. playback-manifest call sites (params order)
+  3. playerToken handling effect (kya hota hai decrypt ke baad)
+  4. saare 32/64-char hex literals (possible keys)
 """
 
 import re
@@ -12,22 +16,10 @@ BASE = "https://app.studyratna.org"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
-PATTERNS = [
-    "playerToken",
-    "api-lite",
-    "decrypt",
-    "createDecipheriv",
-    "AES",
-    "CryptoJS",
-    "m3u8",
-    "hls",
-    "videoUrl",
-    "streamUrl",
-    "video_url",
-    "lecture",
-    "TOKEN_KEY",
-    "secret",
-    "atob",
+TARGETS = [
+    ("decryptForWeb", 6000, 1200),
+    ("playback-manifest", 3000, 3000),
+    ("playerToken", 800, 2500),
 ]
 
 
@@ -40,48 +32,52 @@ def fetch(url):
 def main():
     out = []
     html = fetch(BASE + "/")
-    out.append(f"[+] HTML fetched: {len(html)} chars")
-
     chunks = sorted(set(re.findall(r"/_next/static/chunks/[A-Za-z0-9~._-]+\.js", html)))
-    out.append(f"[+] JS chunks found: {len(chunks)}")
-
-    sources = {}
+    sources = {"PAGE_HTML": html}
     for c in chunks:
         try:
             sources[c] = fetch(BASE + c)
         except Exception as e:
             out.append(f"[-] chunk fail {c}: {e}")
+    out.append(f"[+] {len(sources)} sources, "
+               f"{sum(len(v) for v in sources.values())} chars total")
 
-    # HTML me bhi dhoondho
-    sources["PAGE_HTML"] = html
-    out.append(f"[+] downloaded {len(sources)} sources, "
-               f"total {sum(len(v) for v in sources.values())} chars")
-
-    for pat in PATTERNS:
-        out.append(f"\n===== PATTERN: {pat} =====")
-        hits = 0
-        seen = set()
+    # 1-3: targeted context dumps
+    for pat, before, after in TARGETS:
+        out.append(f"\n\n########## DUMP: {pat} ##########")
+        shown = 0
         for name, src in sources.items():
-            for m in re.finditer(re.escape(pat), src, re.IGNORECASE):
-                s = max(0, m.start() - 250)
-                snippet = src[s:m.end() + 350].replace("\n", " ")
-                key = snippet[:120]
-                if key in seen:
-                    continue
-                seen.add(key)
-                hits += 1
-                out.append(f"[{name} @{m.start()}]\n...{snippet}...\n")
-                if hits >= 8:
+            for m in re.finditer(re.escape(pat), src):
+                if shown >= 4:
                     break
-            if hits >= 8:
+                s = max(0, m.start() - before)
+                e = min(len(src), m.end() + after)
+                out.append(f"\n--- [{name}] @{m.start()} ---\n{src[s:e]}\n")
+                shown += 1
+            if shown >= 4:
                 break
-        if hits == 0:
-            out.append("(no match)")
+
+    # 4: hex literals (possible AES keys)
+    out.append("\n\n########## HEX LITERALS ##########")
+    seen = set()
+    for name, src in sources.items():
+        for m in re.finditer(r"""["']([0-9a-fA-F]{32}|[0-9a-fA-F]{64})["']""", src):
+            val = m.group(1)
+            if val in seen:
+                continue
+            seen.add(val)
+            s = max(0, m.start() - 150)
+            out.append(f"\n[{name} @{m.start()}] {len(val)} chars: {val}\n"
+                       f"  ctx: ...{src[s:m.end() + 150]}...")
+            if len(seen) >= 25:
+                break
+        if len(seen) >= 25:
+            break
 
     text = "\n".join(out)
-    print(text[:60000])
+    print(text[:80000])
     with open("inspect_report.md", "w", encoding="utf-8") as f:
-        f.write(text[:60000])
+        f.write(text[:80000])
     return 0
 
 
