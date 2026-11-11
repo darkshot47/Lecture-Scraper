@@ -54,18 +54,11 @@ jobs:
 
     - name: Run Key Diagnostic
       if: inputs.mode == 'diag'
+      env:
+        TARGET_URL: ${{ inputs.target_url }}
       run: |
-        python - <<'PY' > diag_args.sh
-        import downloader as d
-        from urllib.parse import urlparse, parse_qs
-        import os
-        url = os.environ["TARGET_URL"]
-        data = d.decrypt_player_token(parse_qs(urlparse(url).query)["playerToken"][0])
-        print(f"PLAYLIST='{data['videoUrl']}'")
-        print(f"COOKIE='{data['cookie']}'")
-        PY
-        . ./diag_args.sh
-        python diag_key.py "$PLAYLIST" "$COOKIE" 2>&1 | tee -a run.log
+        python diag_key.py 2>&1 | tee run.log || true
+        cp run.log inspect_report.md
 
     - name: Run Site Inspector
       if: inputs.mode == 'inspect'

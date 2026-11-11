@@ -26,16 +26,40 @@ BROWSER_HEADERS = {
 }
 
 
+def resolve_target():
+    """TARGET_URL (ya argv) se playlist + cookie + videoKey nikalo."""
+    import os
+    from urllib.parse import parse_qs, urlparse
+
+    url = os.environ.get("TARGET_URL") or (sys.argv[1] if len(sys.argv) > 1 else "")
+    if not url:
+        raise SystemExit("TARGET_URL chahiye")
+    import downloader as d
+    tok = parse_qs(urlparse(url).query).get("playerToken", [None])[0]
+    if not tok:
+        raise SystemExit("playerToken nahi mila")
+    data = d.decrypt_player_token(tok)
+    playlist = data["videoUrl"]
+    cookie = data.get("cookie") or ""
+    vid = playlist.split("/stream/")[-1].split("/")[0]
+    key_url = (f"https://api.penpencil.co/v1/videos/get-hls-key"
+               f"?videoKey={vid}&key=enc.key")
+    # CloudFront direct URL bhi banao
+    cf = None
+    for c in d.cloudfront_candidates(playlist, cookie):
+        if "cloudfront.net" in c:
+            cf = c
+    return playlist, cookie, key_url, cf
+
+
 def main():
-    if len(sys.argv) < 3:
-        print("usage: diag_key.py <playlist_url> <cookie>")
-        return 2
-    playlist, cookie = sys.argv[1], sys.argv[2]
-    key_url = ("https://api.penpencil.co/v1/videos/get-hls-key"
-               "?videoKey=bfa6e07b-8ad3-4308-8aa3-5441a6e61eca&key=enc.key")
+    playlist, cookie, key_url, cf = resolve_target()
+    print(f"[diag] playlist: {playlist}", flush=True)
+    print(f"[diag] cloudfront: {cf}", flush=True)
+    print(f"[diag] key_url: {key_url}", flush=True)
 
     # --- 1) player host with browser headers -------------------------------
-    print("=== 1) player host (browser headers) ===", flush=True)
+    print("\n=== 1) player host (browser headers) ===", flush=True)
     for label, hdrs in [
         ("bare", {"User-Agent": UA}),
         ("browser", {**BROWSER_HEADERS, "Referer": "https://app.studyratna.org/"}),
@@ -102,6 +126,8 @@ def main():
             b.close()
     except Exception as e:
         print(f"playwright error: {str(e)[:300]}", flush=True)
+    # release step isi file ko pick karta hai
+    import contextlib
     return 0
 
 
