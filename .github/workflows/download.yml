@@ -49,7 +49,8 @@ jobs:
 
     - name: Install Dependencies
       run: |
-        pip install playwright yt-dlp requests
+        pip install playwright yt-dlp pycryptodome requests
+        sudo apt-get install -y ffmpeg
         playwright install --with-deps chromium
 
     - name: Run Site Inspector

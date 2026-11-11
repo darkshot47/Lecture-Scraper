@@ -1,30 +1,35 @@
 """
-Lecture Downloader — v3 (StudyRatna playerToken support)
-=========================================================
-StudyRatna (app.studyratna.org) ek SPA hai — video URL page HTML me nahi hota,
-frontend JS playerToken se backend API call karke video details leta hai.
-Isliye v3 me:
+Lecture Downloader — v4 (StudyRatna playerToken, direct AES decrypt)
+====================================================================
 
-  - Har API/JSON response log hota hai (api_responses.log) — video URL
-    aksar wahi se milta hai
-  - Page HTML ke andar chhupe hue stream/embed URLs regex se nikale jate hain
-  - Page ka visible text hamesha save hota hai (page_text.txt) — token
-    expired/invalid ya login wall ka error wahi dikhega
-  - Console errors + failed requests bhi log hote hain
-  - Logs me playerToken REDACTED kar diya jata hai (token leak na ho)
+Asli wajah kyun pehle lecture nahi milta tha:
+  StudyRatna ek Telegram Mini App (Next.js SPA) hai. Page ke HTML me video
+  nahi hoti. `?playerToken=...` ek AES-encrypted payload hai jisme seedha
+  video URL + CloudFront signed cookie hota hai. Player usi ko decrypt karta
+  hai. Isliye browser me play button dhoondhne se kuch nahi milta.
 
-Agar token expired ho ya IP-bound ho to page par error dikhega —
-page_text.txt / screenshot.png dekh kar pata chalega.
+v4 strategy:
+  1. playerToken decrypt karo (AES-256-CBC, key = SHA256("5d902..."), IV:CT)
+     -> {type, initData, lecture, videoUrl, cookie, ...}
+  2. videoUrl (master.m3u8) + CloudFront cookie se yt-dlp download
+  3. Agar videoUrl token me nahi hai -> playback-manifest API try karo
+     (response bhi AES-encrypted hota hai: key = SHA256("9395..." + initData[:50]))
+  4. Agar token hi nahi -> normal browser fallback (play click + network sniff)
+  5. Fail hone par exit code 1 (build red) + debug files
 """
 
 import asyncio
+import hashlib
+import json
 import os
 import re
 import shutil
 import sys
+from urllib.parse import parse_qs, unquote, urlparse
 
 import yt_dlp
-from playwright.async_api import async_playwright
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
 
 # ---------------------------------------------------------------------------
 # Config
@@ -32,44 +37,59 @@ from playwright.async_api import async_playwright
 
 TARGET_URL = os.environ.get("TARGET_URL", "").strip()
 WAIT_SECONDS = int(os.environ.get("WAIT_SECONDS", "60"))
-DEBUG_FILES = ["screenshot.png", "page.html", "network.log",
-               "api_responses.log", "page_text.txt"]
 
-HLS_HINTS = (".m3u8", "manifest", ".mpd")
-MEDIA_HINTS = (".mp4", ".webm", ".mkv", ".mov", "videoplayback", "googlevideo")
-EMBED_HINTS = ("youtube.com/embed", "youtu.be", "player.vimeo.com", "vimeo.com/")
-API_HINTS = ("api", "studyratna", "lecture", "video", "player", "token",
-             "stream", "course", "chapter", "lesson")
+# StudyRatna constants (JS bundle se nikale gaye)
+WEB_TOKEN_KEY_SEED = "5d90298d9598093cf8cb4b55434de5bc"   # decryptForWeb
+API_KEY_SEED = "939567f60cc4728ee81fc28fae7458af"         # decrypt(enc, initData)
+MANIFEST_API = "https://api-lite.studyratna.org/v1/pw/playback-manifest"
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
+HLS_HINTS = (".m3u8", "manifest", ".mpd")
+MEDIA_HINTS = (".mp4", ".webm", ".mkv", ".mov", "videoplayback", "googlevideo")
+EMBED_HINTS = ("youtube.com/embed", "youtu.be", "player.vimeo.com", "vimeo.com/")
+
 network_log_lines = []
-api_log_lines = []
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Crypto helpers
 # ---------------------------------------------------------------------------
 
-def redact(text: str) -> str:
-    """Logs me playerToken / lambe hex tokens chhupao (leak na ho)."""
-    text = re.sub(r"(playerToken=)[A-Za-z0-9%._\-]+", r"\1REDACTED", text)
-    text = re.sub(r"\b[0-9a-f]{64,}:[0-9a-f]{64,}\b", "TOKEN_REDACTED", text)
-    return text
+def _aes_decrypt(key: bytes, enc: str):
+    """'<iv_hex>:<ciphertext_hex>' -> dict (JS wala AES-CBC/Pkcs7 format)."""
+    try:
+        iv_hex, ct_hex = enc.split(":")
+        iv, ct = bytes.fromhex(iv_hex), bytes.fromhex(ct_hex)
+        pt = unpad(AES.new(key, AES.MODE_CBC, iv).decrypt(ct), 16)
+        return json.loads(pt.decode("utf-8", "replace"))
+    except Exception as e:
+        print(f"[-] AES decrypt fail: {e}", flush=True)
+        return None
 
 
-def log_network(line: str):
-    network_log_lines.append(redact(line))
-    print(redact(line), flush=True)
+def decrypt_player_token(token: str):
+    """?playerToken=... ko decrypt karo (decryptForWeb ka Python port)."""
+    token = unquote(token).strip()
+    # URL me '+' aa sakta hai (space) — hex me nahi hota, par safety
+    token = token.replace(" ", "+")
+    key = hashlib.sha256(WEB_TOKEN_KEY_SEED.encode()).digest()
+    return _aes_decrypt(key, token)
 
 
-def log_api(line: str):
-    api_log_lines.append(redact(line))
-    print(redact(line), flush=True)
+def decrypt_api_response(enc: str, init_data: str):
+    """API ka {"encrypted": "..."} response decrypt karo."""
+    seed = API_KEY_SEED + (init_data or "")[:50]
+    key = hashlib.sha256(seed.encode()).digest()
+    return _aes_decrypt(key, enc)
 
+
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
 
 def is_hls(url: str) -> bool:
     return any(h in url.lower() for h in HLS_HINTS)
@@ -84,155 +104,177 @@ def is_embed(url: str) -> bool:
     return any(h in url.lower() for h in EMBED_HINTS)
 
 
-def is_api(url: str) -> bool:
-    return any(h in url.lower() for h in API_HINTS)
+def redact(text: str) -> str:
+    text = re.sub(r"(playerToken=)[A-Za-z0-9%._\-]+", r"\1REDACTED", str(text))
+    text = re.sub(r"\b[0-9a-f]{64,}:[0-9a-f]{64,}\b", "TOKEN_REDACTED", text)
+    return text
+
+
+def log_network(line: str):
+    network_log_lines.append(redact(line))
+    print(redact(line), flush=True)
 
 
 URL_RE = re.compile(r"https?://[^\s\"'<>\\]+", re.IGNORECASE)
 
 
 def find_stream_urls(text: str):
-    """Kisi text/JSON/HTML ke andar chhupe stream/embed URLs nikalo."""
     found = []
     for m in URL_RE.finditer(text or ""):
         u = m.group(0).rstrip("),;]}")
-        if is_media(u) or is_embed(u):
-            if u not in found:
-                found.append(u)
+        if (is_media(u) or is_embed(u)) and u not in found:
+            found.append(u)
     return found
 
 
 # ---------------------------------------------------------------------------
-# Browser helpers
-# ---------------------------------------------------------------------------
-
-async def extract_dom_sources(page):
-    try:
-        return await page.evaluate(
-            """() => {
-                const out = { videos: [], sources: [], iframes: [] };
-                document.querySelectorAll('video').forEach(v => {
-                    if (v.currentSrc) out.videos.push(v.currentSrc);
-                    if (v.src) out.videos.push(v.src);
-                });
-                document.querySelectorAll('source').forEach(s => {
-                    if (s.src) out.sources.push(s.src);
-                });
-                document.querySelectorAll('iframe').forEach(f => {
-                    if (f.src) out.iframes.push(f.src);
-                });
-                return out;
-            }"""
-        )
-    except Exception:
-        return {"videos": [], "sources": [], "iframes": []}
-
-
-async def try_click_play(page):
-    try:
-        await page.click("video", timeout=3000)
-        print("[*] Clicked <video> element", flush=True)
-        return True
-    except Exception:
-        pass
-    selectors = [
-        "button:has-text('Play')", "button:has-text('play')",
-        "[aria-label='Play']", "[aria-label='play']",
-        ".play-button", ".play-btn", ".vjs-big-play-button",
-        ".ytp-play-button", ".jw-big-play-button",
-        "button.play", ".play",
-    ]
-    for sel in selectors:
-        try:
-            await page.click(sel, timeout=2000)
-            print(f"[*] Clicked play button: {sel}", flush=True)
-            return True
-        except Exception:
-            continue
-    try:
-        await page.keyboard.press("Space")
-        print("[*] Pressed Space key (play try)", flush=True)
-    except Exception:
-        pass
-    return False
-
-
-async def save_debug(page, reason: str):
-    print(f"\n[-] Debug dump ({reason}):", flush=True)
-    try:
-        await page.screenshot(path="screenshot.png", full_page=True)
-        print("    -> screenshot.png saved", flush=True)
-    except Exception as e:
-        print(f"    -> screenshot fail: {e}", flush=True)
-    try:
-        html = await page.content()
-        with open("page.html", "w", encoding="utf-8") as f:
-            f.write(redact(html))
-        print(f"    -> page.html saved ({len(html)} chars)", flush=True)
-    except Exception as e:
-        print(f"    -> page.html fail: {e}", flush=True)
-    try:
-        text = await page.inner_text("body")
-        with open("page_text.txt", "w", encoding="utf-8") as f:
-            f.write(redact(text))
-        print(f"    -> page_text.txt saved ({len(text)} chars)", flush=True)
-    except Exception as e:
-        print(f"    -> page_text fail: {e}", flush=True)
-    with open("network.log", "w", encoding="utf-8") as f:
-        f.write("\n".join(network_log_lines))
-    with open("api_responses.log", "w", encoding="utf-8") as f:
-        f.write("\n".join(api_log_lines))
-    print("    -> network.log + api_responses.log saved", flush=True)
-
-
-# ---------------------------------------------------------------------------
-# yt-dlp download
+# yt-dlp
 # ---------------------------------------------------------------------------
 
 def download_with_ytdlp(url: str, headers: dict | None = None, label: str = "stream"):
-    print(f"[*] Downloading ({label}) via yt-dlp: {redact(url[:120])}...", flush=True)
+    print(f"[*] Downloading ({label}): {redact(url[:150])}", flush=True)
+    if headers:
+        print(f"    headers: {', '.join(k for k in headers)}", flush=True)
     if is_hls(url) and not shutil.which("ffmpeg"):
-        print("[!] WARNING: ffmpeg nahi mila — HLS download fail ho sakta hai!", flush=True)
+        print("[!] WARNING: ffmpeg nahi mila — HLS merge fail ho sakta hai!", flush=True)
+
     ydl_opts = {
         "outtmpl": "downloaded_lecture.%(ext)s",
-        "format": "best/bestvideo+bestaudio/best",
+        "format": "bestvideo*+bestaudio/best",
         "merge_output_format": "mp4",
         "noplaylist": True,
+        "retries": 5,
+        "fragment_retries": 5,
+        "concurrent_fragment_downloads": 5,
         "verbose": False,
-        "retries": 3,
-        "fragment_retries": 3,
+        "progress": True,
     }
     if headers:
         ydl_opts["http_headers"] = headers
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
     except Exception as e:
-        print(f"[-] yt-dlp download fail: {redact(str(e))}", flush=True)
+        print(f"[-] yt-dlp fail: {redact(str(e))[:500]}", flush=True)
         return False
-    downloaded = [f for f in os.listdir(".") if f.startswith("downloaded_lecture.")]
-    if downloaded:
-        print(f"[+] Download Finished! File(s): {downloaded}", flush=True)
+
+    files = [f for f in os.listdir(".") if f.startswith("downloaded_lecture.")]
+    if files:
+        for f in files:
+            size = os.path.getsize(f) / (1024 * 1024)
+            print(f"[+] Downloaded: {f} ({size:.1f} MB)", flush=True)
         return True
-    print("[-] yt-dlp chala lekin downloaded_lecture.* file nahi bani.", flush=True)
+    print("[-] yt-dlp chala lekin file nahi bani.", flush=True)
     return False
 
 
+def build_headers(cookie: str | None) -> dict:
+    h = {
+        "User-Agent": USER_AGENT,
+        "Referer": "https://app.studyratna.org/",
+        "Origin": "https://app.studyratna.org",
+    }
+    if cookie:
+        h["Cookie"] = cookie
+    return h
+
+
 # ---------------------------------------------------------------------------
-# Main
+# StudyRatna token flow
 # ---------------------------------------------------------------------------
 
-async def main() -> int:
-    if not TARGET_URL:
-        print("[-] ERROR: TARGET_URL env var set nahi hai!", flush=True)
-        return 2
+def try_token_download() -> bool:
+    """playerToken se seedha video download. Success par True."""
+    qs = parse_qs(urlparse(TARGET_URL).query)
+    token = (qs.get("playerToken") or [None])[0]
+    if not token:
+        print("[*] URL me playerToken nahi hai — token flow skip.", flush=True)
+        return False
 
-    print(f"[*] Targeting URL: {redact(TARGET_URL[:80])}... (token redacted)", flush=True)
-    print(f"[*] Stream ke liye max wait: {WAIT_SECONDS}s", flush=True)
+    print(f"[*] playerToken mila (length {len(token)}) — decrypt kar raha hoon...", flush=True)
+    data = decrypt_player_token(token)
+    if not data:
+        print("[-] playerToken decrypt fail (token corrupt/expired?).", flush=True)
+        return False
+
+    lecture = data.get("lecture") or {}
+    topic = (lecture.get("topic")
+             or (lecture.get("videoDetails") or {}).get("name")
+             or lecture.get("name") or "(unknown lecture)")
+    print(f"[+] Token decrypted! type={data.get('type')}", flush=True)
+    print(f"[+] Lecture: {topic}", flush=True)
+    print(f"[+] Batch: {data.get('batchId')} | Subject: {data.get('subjectId')} "
+          f"| Schedule: {data.get('scheduleId')}", flush=True)
+
+    video_url = data.get("videoUrl")
+    cookie = data.get("cookie")
+    print(f"[+] videoUrl in token: {'YES' if video_url else 'NO'}", flush=True)
+    print(f"[+] CloudFront cookie: {'YES' if cookie else 'NO'}", flush=True)
+
+    # Agar token me videoUrl nahi hai to playback-manifest API se lo
+    if not video_url:
+        video_url = fetch_manifest_video_url(data)
+
+    if not video_url:
+        print("[-] Token me bhi videoUrl nahi mila.", flush=True)
+        return False
+
+    print(f"[+] Stream URL: {redact(video_url)}", flush=True)
+
+    if download_with_ytdlp(video_url, build_headers(cookie), label="StudyRatna stream"):
+        with open("lecture_info.txt", "w", encoding="utf-8") as f:
+            f.write(f"Lecture: {topic}\nStream: {video_url}\n")
+        return True
+    return False
+
+
+def fetch_manifest_video_url(data: dict):
+    """playback-manifest API se videoUrl lao (agar token me nahi tha)."""
+    init_data = data.get("initData") or ""
+    batch = data.get("batchId")
+    subject = data.get("subjectId")
+    schedule = data.get("scheduleId")
+    if not (init_data and batch and subject and schedule):
+        print("[*] Manifest API ke liye ids/initData adhoora — skip.", flush=True)
+        return None
+
+    import urllib.request
+
+    url = f"{MANIFEST_API}/{batch}/{subject}/{schedule}"
+    print(f"[*] Manifest API call: {url}", flush=True)
+    req = urllib.request.Request(url, headers={
+        "x-init-data": init_data,
+        "Authorization": f"tma {init_data}",
+        "User-Agent": USER_AGENT,
+        "Referer": "https://app.studyratna.org/",
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        print(f"[-] Manifest API fail: {redact(str(e))[:300]}", flush=True)
+        return None
+
+    if body.get("encrypted"):
+        body = decrypt_api_response(body["encrypted"], init_data) or {}
+    if body.get("data", {}).get("videoUrl"):
+        return body["data"]["videoUrl"]
+    print(f"[-] Manifest response me videoUrl nahi: {redact(str(body))[:300]}", flush=True)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Browser fallback (generic sites)
+# ---------------------------------------------------------------------------
+
+async def browser_fallback() -> str | None:
+    """Normal browser se stream dhoondho (token flow fail hone par)."""
+    from playwright.async_api import async_playwright
 
     stream_url = None
     embed_url = None
-    browser_headers = {"User-Agent": USER_AGENT, "Referer": TARGET_URL}
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -241,160 +283,132 @@ async def main() -> int:
                   "--disable-blink-features=AutomationControlled"],
         )
         context = await browser.new_context(
-            user_agent=USER_AGENT,
-            viewport={"width": 1280, "height": 720},
+            user_agent=USER_AGENT, viewport={"width": 1280, "height": 720},
             locale="en-IN",
         )
         page = await context.new_page()
 
-        def handle_request(request):
+        def on_request(request):
             nonlocal stream_url, embed_url
             url = request.url
             log_network(f"[REQ] {request.method} {url[:200]}")
             if is_hls(url) and not stream_url:
                 stream_url = url
-                print(f"\n[+] Captured HLS Stream URL: {redact(stream_url)}\n", flush=True)
             elif is_media(url) and not stream_url:
                 stream_url = url
-                print(f"\n[+] Captured Media Stream URL: {redact(stream_url)}\n", flush=True)
             elif is_embed(url) and not embed_url:
                 embed_url = url
-                print(f"\n[+] Captured Embed URL: {redact(embed_url)}\n", flush=True)
 
-        async def handle_response(response):
-            nonlocal stream_url, embed_url
-            try:
-                url = response.url
-                if not is_api(url):
-                    return
-                ctype = (response.headers.get("content-type") or "")
-                if "json" not in ctype and "text" not in ctype:
-                    return
-                body = await response.text()
-                log_api(f"[API {response.status}] {url[:150]}")
-                log_api(f"    body[:2000]: {body[:2000]}")
-                # API response ke andar video URL chhupa ho sakta hai
-                for u in find_stream_urls(body):
-                    if is_embed(u) and not embed_url:
-                        embed_url = u
-                        print(f"\n[+] Embed URL API response se mila: {redact(u)}\n", flush=True)
-                    elif is_media(u) and not stream_url:
-                        stream_url = u
-                        print(f"\n[+] Stream URL API response se mila: {redact(u)}\n", flush=True)
-            except Exception:
-                pass
+        page.on("request", on_request)
 
-        def handle_console(msg):
-            log_api(f"[CONSOLE {msg.type}] {msg.text[:300]}")
-
-        def handle_pageerror(err):
-            log_api(f"[PAGEERROR] {str(err)[:300]}")
-
-        def handle_requestfailed(request):
-            log_network(f"[FAILED] {request.method} {request.url[:150]} :: {request.failure}")
-
-        page.on("request", handle_request)
-        page.on("response", handle_response)
-        page.on("console", handle_console)
-        page.on("pageerror", handle_pageerror)
-        page.on("requestfailed", handle_requestfailed)
-
-        # --- Page load ---------------------------------------------------
         try:
             await page.goto(TARGET_URL, timeout=60000, wait_until="domcontentloaded")
-        except Exception as e:
-            print(f"[-] Page load error: {redact(str(e))}", flush=True)
-
-        try:
-            title = await page.title()
-        except Exception:
-            title = "(title nahi mil paya)"
-        print(f"[*] Page title: {title}", flush=True)
-        print(f"[*] Final URL (redirect ke baad): {redact(page.url[:120])}", flush=True)
-
-        try:
             await page.wait_for_load_state("networkidle", timeout=15000)
-        except Exception:
-            print("[*] networkidle wait timeout (ignore)", flush=True)
+        except Exception as e:
+            print(f"[-] Page load: {redact(str(e))[:200]}", flush=True)
 
-        # Page ka visible text turant check karo — token error yahi dikhega
-        try:
-            text = await page.inner_text("body")
-            print(f"\n[*] Page text (first 1000 chars):\n{redact(text[:1000])}\n", flush=True)
-            low = text.lower()
-            for kw in ("invalid", "expired", "unauthorized", "login", "not found",
-                       "token", "session", "forbidden", "access denied"):
-                if kw in low:
-                    print(f"[!] Page text me keyword mila: '{kw}' — token/login issue ho sakta hai", flush=True)
-                    break
-        except Exception:
-            pass
+        print(f"[*] Page title: {await page.title()}", flush=True)
 
-        # HTML ke andar chhupe URLs bhi check karo
-        try:
-            html = await page.content()
-            for u in find_stream_urls(html):
-                if is_embed(u) and not embed_url:
-                    embed_url = u
-                    print(f"\n[+] Embed URL page HTML se mila: {redact(u)}\n", flush=True)
-                elif is_media(u) and not stream_url:
-                    stream_url = u
-                    print(f"\n[+] Stream URL page HTML se mila: {redact(u)}\n", flush=True)
-        except Exception:
-            pass
+        # Play click try
+        for sel in ["video", "[aria-label='Play']", ".vjs-big-play-button",
+                    ".ytp-play-button", "button:has-text('Play')"]:
+            try:
+                await page.click(sel, timeout=2000)
+                print(f"[*] Clicked: {sel}", flush=True)
+                break
+            except Exception:
+                continue
 
-        # --- Play click + stream polling -------------------------------
-        await try_click_play(page)
-
-        waited = 0
+        waited, dom_stream = 0, None
         while waited < WAIT_SECONDS and not stream_url and not embed_url:
             await asyncio.sleep(2)
             waited += 2
-            dom = await extract_dom_sources(page)
-            for src in dom["videos"] + dom["sources"]:
-                if src and not src.startswith("blob:") and is_media(src):
-                    stream_url = src
-                    print(f"\n[+] Stream URL DOM se mili: {redact(stream_url)}\n", flush=True)
-                    break
-            for src in dom["iframes"]:
-                if is_embed(src):
-                    embed_url = src
-                    print(f"\n[+] Embed URL DOM se mila: {redact(embed_url)}\n", flush=True)
-                    break
-            if waited % 10 == 0 and not stream_url:
-                await try_click_play(page)
-            if waited % 10 == 0:
-                print(f"[*] ...stream ka wait ho raha hai ({waited}s / {WAIT_SECONDS}s)", flush=True)
-
-        try:
-            cookies = await context.cookies()
-            if cookies:
-                browser_headers["Cookie"] = "; ".join(
-                    f"{c['name']}={c['value']}" for c in cookies
+            try:
+                dom = await page.evaluate(
+                    """() => {
+                        const v = [];
+                        document.querySelectorAll('video, source').forEach(
+                            el => { if (el.src) v.push(el.src);
+                                    if (el.currentSrc) v.push(el.currentSrc); });
+                        document.querySelectorAll('iframe').forEach(
+                            el => { if (el.src) v.push(el.src); });
+                        return v;
+                    }"""
                 )
+                for src in dom:
+                    if not src or src.startswith("blob:"):
+                        continue
+                    if is_media(src):
+                        dom_stream = src
+                        break
+                    if is_embed(src) and not embed_url:
+                        embed_url = src
+            except Exception:
+                pass
+            if dom_stream:
+                stream_url = dom_stream
+                break
+
+        # Debug files hamesha
+        try:
+            await page.screenshot(path="screenshot.png", full_page=True)
+            with open("page.html", "w", encoding="utf-8") as f:
+                f.write(redact(await page.content()))
+            with open("page_text.txt", "w", encoding="utf-8") as f:
+                f.write(redact(await page.inner_text("body")))
         except Exception:
             pass
+        with open("network.log", "w", encoding="utf-8") as f:
+            f.write("\n".join(network_log_lines))
 
-        # Hamesha debug files save karo (success par bhi useful hain)
-        await save_debug(page, "final state")
+        cookies = await context.cookies()
+        cookie_hdr = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
         await browser.close()
 
-    # --- Download ---------------------------------------------------------
     if stream_url:
-        if download_with_ytdlp(stream_url, browser_headers, label="captured stream"):
+        return stream_url
+    if embed_url:
+        return embed_url
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    if not TARGET_URL:
+        print("[-] ERROR: TARGET_URL set nahi hai.", flush=True)
+        return 2
+
+    print(f"[*] Target: {redact(TARGET_URL)[:120]}", flush=True)
+    print(f"[*] ffmpeg: {shutil.which('ffmpeg') or 'NOT FOUND'}", flush=True)
+
+    # 1) StudyRatna token flow (fast, deterministic)
+    if "playerToken" in TARGET_URL:
+        if try_token_download():
+            print("\n[+] SUCCESS — lecture download ho gayi.", flush=True)
             return 0
-    elif embed_url:
-        if download_with_ytdlp(embed_url, browser_headers, label="embed"):
+        print("[-] Token flow se download nahi hua — browser fallback try...", flush=True)
+
+    # 2) Browser fallback
+    stream = asyncio.run(browser_fallback())
+    if stream:
+        if download_with_ytdlp(stream, build_headers(None), label="browser-captured"):
+            print("\n[+] SUCCESS — lecture download ho gayi.", flush=True)
             return 0
     else:
-        print("[-] Browser se stream nahi mili — yt-dlp fallback try kar raha hoon...", flush=True)
-        if download_with_ytdlp(TARGET_URL, browser_headers, label="original URL fallback"):
-            return 0
+        print("[-] Browser se bhi stream nahi mili.", flush=True)
 
-    print("\n[-] Stream URL not found / download fail.", flush=True)
-    print("    Debug files: screenshot.png, page.html, page_text.txt, network.log, api_responses.log", flush=True)
+    # 3) Last resort: yt-dlp original URL par
+    if download_with_ytdlp(TARGET_URL, build_headers(None), label="original URL"):
+        print("\n[+] SUCCESS.", flush=True)
+        return 0
+
+    print("\n[-] FAIL: lecture download nahi hui.", flush=True)
+    print("    Debug: screenshot.png, page.html, page_text.txt, network.log", flush=True)
     return 1
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    sys.exit(main())
