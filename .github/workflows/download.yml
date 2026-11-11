@@ -61,7 +61,10 @@ jobs:
       if: inputs.mode != 'inspect'
       env:
         TARGET_URL: ${{ inputs.target_url }}
-      run: python downloader.py
+        WAIT_SECONDS: '25'
+      run: |
+        set -o pipefail
+        python downloader.py 2>&1 | tee run.log
 
     - name: Upload Video Artifact
       if: always()
@@ -83,6 +86,8 @@ jobs:
           network.log
           api_responses.log
           inspect_report.md
+          run.log
+          lecture_info.txt
         if-no-files-found: ignore
 
     # Debug summary GitHub Release notes me post karo — token REDACTED hota hai.
@@ -99,6 +104,11 @@ jobs:
         done
         {
           echo "## Debug Report — Run [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+          echo ""
+          echo "### Run log (run.log, last 250 lines)"
+          echo '```'
+          tail -n 250 run.log 2>/dev/null || echo "(no run.log)"
+          echo '```'
           echo ""
           echo "### Page text (page_text.txt, first 3000 chars)"
           echo '```'

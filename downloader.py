@@ -169,6 +169,30 @@ def download_with_ytdlp(url: str, headers: dict | None = None, label: str = "str
     return False
 
 
+def probe_stream(url: str, headers: dict) -> None:
+    """Stream URL ko seedha fetch karke dekho — 403/404 turant pata chal jayega."""
+    import urllib.error
+    import urllib.request
+
+    print(f"[*] PROBE: {url[:120]}", flush=True)
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read(600).decode("utf-8", "replace")
+            print(f"[+] PROBE OK: HTTP {r.status} | "
+                  f"content-type={r.headers.get('content-type')} | "
+                  f"len≈{r.headers.get('content-length')}", flush=True)
+            print(f"    body[:400]: {body[:400]}", flush=True)
+    except urllib.error.HTTPError as e:
+        print(f"[-] PROBE FAIL: HTTP {e.code} {e.reason}", flush=True)
+        try:
+            print(f"    body[:300]: {e.read(300).decode('utf-8', 'replace')}", flush=True)
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[-] PROBE FAIL: {redact(str(e))[:300]}", flush=True)
+
+
 def build_headers(cookie: str | None) -> dict:
     h = {
         "User-Agent": USER_AGENT,
@@ -221,6 +245,8 @@ def try_token_download() -> bool:
         return False
 
     print(f"[+] Stream URL: {redact(video_url)}", flush=True)
+
+    probe_stream(video_url, build_headers(cookie))
 
     if download_with_ytdlp(video_url, build_headers(cookie), label="StudyRatna stream"):
         with open("lecture_info.txt", "w", encoding="utf-8") as f:
