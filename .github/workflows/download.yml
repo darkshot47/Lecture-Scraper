@@ -49,9 +49,18 @@ jobs:
 
     - name: Install Dependencies
       run: |
+        set -x
+        pip install --upgrade pip
         pip install playwright yt-dlp pycryptodome requests
-        sudo apt-get install -y ffmpeg
-        playwright install --with-deps chromium
+        # ffmpeg usually preinstalled; install karo par fail ho to rukna nahi
+        if ! command -v ffmpeg >/dev/null 2>&1; then
+          (sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg) \
+            || (sleep 10 && sudo apt-get install -y --no-install-recommends ffmpeg) \
+            || echo "WARN: ffmpeg install fail"
+        fi
+        ffmpeg -version 2>/dev/null | head -1 || echo "WARN: ffmpeg missing"
+        # Browser sirf fallback ke liye — fail ho to bhi downloader chale
+        playwright install --with-deps chromium || playwright install chromium || echo "WARN: playwright browser fail"
 
     - name: Run Site Inspector
       if: inputs.mode == 'inspect'
