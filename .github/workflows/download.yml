@@ -11,6 +11,9 @@ on:
 jobs:
   download:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
 
     steps:
     - name: Checkout Code
@@ -26,6 +29,16 @@ jobs:
         echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
         for i in {1..3}; do sudo apt-get update && break || sleep 5; done
 
+    # Playwright browser cache — install fast hoga, token expire hone se pehle
+    # downloader start ho jayega (pehli run slow, uske baad fast).
+    - name: Cache Playwright browsers
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-${{ runner.os }}-chromium-v1
+        restore-keys: |
+          playwright-${{ runner.os }}-
+
     - name: Install Dependencies
       run: |
         pip install playwright yt-dlp requests
@@ -36,8 +49,6 @@ jobs:
         TARGET_URL: ${{ inputs.target_url }}
       run: python downloader.py
 
-    # FIX: purana path 'downloaded_lecture.mp4' exact tha — yt-dlp aksar
-    # alag extension (.webm/.mkv) banata hai, isliye wildcard use karo.
     - name: Upload Video Artifact
       if: always()
       uses: actions/upload-artifact@v4
@@ -46,8 +57,6 @@ jobs:
         path: downloaded_lecture.*
         if-no-files-found: warn
 
-    # FIX: lecture na mile to bhi debug files upload karo taaki pata chale
-    # kyun nahi mila (screenshot, page HTML, network log).
     - name: Upload Debug Logs
       if: always()
       uses: actions/upload-artifact@v4
@@ -56,5 +65,43 @@ jobs:
         path: |
           screenshot.png
           page.html
+          page_text.txt
           network.log
+          api_responses.log
         if-no-files-found: ignore
+
+    # Debug summary seedha GitHub Issue me post karo — token REDACTED hota hai.
+    # (Logs artifact download har jagah se possible nahi hota, issue sab dekh sakte hain.)
+    - name: Report Debug Summary to Issue
+      if: always()
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Safety: token kabhi issue me na jaye
+        for f in network.log api_responses.log page.html page_text.txt; do
+          [ -f "$f" ] && sed -i -E 's/(playerToken=)[A-Za-z0-9%._-]+/\1REDACTED/g; s/[0-9a-f]{64,}:[0-9a-f]{64,}/TOKEN_REDACTED/g' "$f" || true
+        done
+        {
+          echo "## Debug Report — Run [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+          echo ""
+          echo "### Page text (page_text.txt, first 3000 chars)"
+          echo '```'
+          head -c 3000 page_text.txt 2>/dev/null || echo "(no page_text.txt)"
+          echo '```'
+          echo ""
+          echo "### Network requests (network.log, first 150 lines)"
+          echo '```'
+          head -n 150 network.log 2>/dev/null || echo "(no network.log)"
+          echo '```'
+          echo ""
+          echo "### API responses (api_responses.log, first 150 lines)"
+          echo '```'
+          head -n 150 api_responses.log 2>/dev/null || echo "(no api_responses.log)"
+          echo '```'
+        } > summary.md
+        ISSUE=$(gh issue list --search "debug-report in:title" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+        if [ -n "$ISSUE" ]; then
+          gh issue comment "$ISSUE" --body-file summary.md
+        else
+          gh issue create --title "debug-report: lecture downloader" --body-file summary.md
+        fi
