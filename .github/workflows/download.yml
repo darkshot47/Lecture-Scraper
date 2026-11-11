@@ -5,8 +5,17 @@ on:
     inputs:
       target_url:
         description: 'StudyRatna / Lecture URL'
-        required: true
+        required: false
+        default: 'https://app.studyratna.org/'
         type: string
+      mode:
+        description: 'download = lecture download karo, inspect = site ka JS/API analysis'
+        required: false
+        default: 'download'
+        type: choice
+        options:
+          - download
+          - inspect
 
 jobs:
   download:
@@ -43,7 +52,12 @@ jobs:
         pip install playwright yt-dlp requests
         playwright install --with-deps chromium
 
+    - name: Run Site Inspector
+      if: inputs.mode == 'inspect'
+      run: python inspect_site.py || true
+
     - name: Run Downloader Script
+      if: inputs.mode != 'inspect'
       env:
         TARGET_URL: ${{ inputs.target_url }}
       run: python downloader.py
@@ -67,6 +81,7 @@ jobs:
           page_text.txt
           network.log
           api_responses.log
+          inspect_report.md
         if-no-files-found: ignore
 
     # Debug summary GitHub Release notes me post karo — token REDACTED hota hai.
@@ -99,6 +114,10 @@ jobs:
           head -n 150 api_responses.log 2>/dev/null || echo "(no api_responses.log)"
           echo '```'
         } > summary.md
+        # Agar inspect mode chala hai to report hi summary banao
+        if [ -f inspect_report.md ]; then
+          cp inspect_report.md summary.md
+        fi
         gh release create "debug-run-$GITHUB_RUN_ID" \
           --target "$GITHUB_SHA" \
           --title "Debug report run $GITHUB_RUN_ID" \
