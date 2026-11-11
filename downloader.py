@@ -169,7 +169,76 @@ def download_with_ytdlp(url: str, headers: dict | None = None, label: str = "str
     return False
 
 
-def probe_stream(url: str, headers: dict) -> None:
+def cloudfront_candidates(video_url: str, cookie: str | None):
+    """
+    player.studyratna.org aksar Cloudflare par 502 deta hai. Token ka
+    CloudFront-Policy cookie batata hai asli distribution host kaunsa hai —
+    us direct host par same path try karo.
+    """
+    import base64
+    import json
+
+    cands = [video_url]
+    if not cookie:
+        return cands
+    m = re.search(r"CloudFront-Policy=([^;]+)", cookie)
+    if not m:
+        return cands
+    policy_str = m.group(1)
+    # CloudFront apna base64 use karta hai: variant try karo
+    variants = [
+        policy_str.replace("-", "+").replace("_", "/").replace("~", "="),
+        policy_str.replace("-", "+").replace("~", "/").replace("_", "="),
+        policy_str.replace("~", "="),
+    ]
+    host, res_path = None, ""
+    for raw in variants:
+        raw = raw + "=" * (-len(raw) % 4)
+        try:
+            decoded = base64.b64decode(raw, validate=False).decode("utf-8", "replace")
+        except Exception:
+            continue
+        # JSON parse ho jaye to best
+        try:
+            policy = json.loads(decoded[:decoded.rfind("}") + 1])
+            res_url = policy["Statement"][0]["Resource"]
+        except Exception:
+            mm = re.search(r"https://([\w.\-]+cloudfront\.net)(/[^\s\"'\\]*)", decoded)
+            res_url = f"https://{mm.group(1)}{mm.group(2) or ''}" if mm else None
+        if res_url:
+            res_url = res_url.replace("/*", "").rstrip("*")
+            host = urlparse(res_url).netloc
+            res_path = urlparse(res_url).path or ""
+            break
+
+    if host:
+        path = urlparse(video_url).path
+        print(f"[+] CloudFront distribution: {host} (resource path: {res_path})", flush=True)
+        cands.append(f"https://{host}{path}")
+        # player host par '/stream' prefix hota hai, CloudFront par nahi:
+        # /stream/<uuid>/master.m3u8  ->  /<uuid>/master.m3u8
+        seg = res_path.rstrip("/").split("/")[-1]
+        if seg and seg in path:
+            tail = path.split(seg, 1)[1]
+            alt = f"https://{host}{res_path.rstrip('/')}{tail}"
+            if alt not in cands:
+                cands.append(alt)
+    else:
+        print("[*] CloudFront policy parse nahi hui — sirf original URL.", flush=True)
+    return cands
+
+
+def pick_working_url(video_url: str, cookie: str | None, headers: dict) -> str | None:
+    """Har candidate URL probe karo, jo chale wahi return karo."""
+    for i, url in enumerate(cloudfront_candidates(video_url, cookie), 1):
+        print(f"\n[*] Candidate #{i}: {redact(url)}", flush=True)
+        if probe_stream(url, headers):
+            print(f"[+] Working URL: {redact(url)}", flush=True)
+            return url
+    return None
+
+
+def probe_stream(url: str, headers: dict) -> bool:
     """Stream URL ko seedha fetch karke dekho — 403/404 turant pata chal jayega."""
     import urllib.error
     import urllib.request
@@ -183,14 +252,17 @@ def probe_stream(url: str, headers: dict) -> None:
                   f"content-type={r.headers.get('content-type')} | "
                   f"len≈{r.headers.get('content-length')}", flush=True)
             print(f"    body[:400]: {body[:400]}", flush=True)
+        return True
     except urllib.error.HTTPError as e:
         print(f"[-] PROBE FAIL: HTTP {e.code} {e.reason}", flush=True)
         try:
             print(f"    body[:300]: {e.read(300).decode('utf-8', 'replace')}", flush=True)
         except Exception:
             pass
+        return False
     except Exception as e:
         print(f"[-] PROBE FAIL: {redact(str(e))[:300]}", flush=True)
+        return False
 
 
 def build_headers(cookie: str | None) -> dict:
@@ -246,9 +318,15 @@ def try_token_download() -> bool:
 
     print(f"[+] Stream URL: {redact(video_url)}", flush=True)
 
-    probe_stream(video_url, build_headers(cookie))
+    headers = build_headers(cookie)
+    working = pick_working_url(video_url, cookie, headers)
+    if not working:
+        # Sab candidate URLs fail — phir bhi yt-dlp ek baar try kar le
+        working = video_url
+        print("[-] Koi bhi URL probe me pass nahi hua — yt-dlp phir bhi try.",
+              flush=True)
 
-    if download_with_ytdlp(video_url, build_headers(cookie), label="StudyRatna stream"):
+    if download_with_ytdlp(working, headers, label="StudyRatna stream"):
         with open("lecture_info.txt", "w", encoding="utf-8") as f:
             f.write(f"Lecture: {topic}\nStream: {video_url}\n")
         return True
