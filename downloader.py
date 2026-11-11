@@ -326,7 +326,20 @@ def try_token_download() -> bool:
         print("[-] Koi bhi URL probe me pass nahi hua — yt-dlp phir bhi try.",
               flush=True)
 
-    if download_with_ytdlp(working, headers, label="StudyRatna stream"):
+    # Pehla try: apna HLS downloader (har request par cookie jata hai)
+    if is_hls(working):
+        try:
+            from hls_download import download_hls
+            out = download_hls(working, headers)
+            if out and os.path.exists(out):
+                with open("lecture_info.txt", "w", encoding="utf-8") as f:
+                    f.write(f"Lecture: {topic}\nStream: {video_url}\nFile: {out}\n")
+                print(f"[+] SUCCESS via HLS downloader: {out}", flush=True)
+                return True
+        except Exception as e:
+            print(f"[-] HLS downloader fail: {redact(str(e))[:300]}", flush=True)
+
+    if download_with_ytdlp(working, headers, label="StudyRatna stream (yt-dlp fallback)"):
         with open("lecture_info.txt", "w", encoding="utf-8") as f:
             f.write(f"Lecture: {topic}\nStream: {video_url}\n")
         return True
@@ -508,10 +521,11 @@ def main() -> int:
     else:
         print("[-] Browser se bhi stream nahi mili.", flush=True)
 
-    # 3) Last resort: yt-dlp original URL par
-    if download_with_ytdlp(TARGET_URL, build_headers(None), label="original URL"):
-        print("\n[+] SUCCESS.", flush=True)
-        return 0
+    # 3) Last resort: yt-dlp original URL par (token URLs par bekaar hai)
+    if "playerToken" not in TARGET_URL:
+        if download_with_ytdlp(TARGET_URL, build_headers(None), label="original URL"):
+            print("\n[+] SUCCESS.", flush=True)
+            return 0
 
     print("\n[-] FAIL: lecture download nahi hui.", flush=True)
     print("    Debug: screenshot.png, page.html, page_text.txt, network.log", flush=True)
