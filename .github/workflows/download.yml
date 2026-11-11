@@ -12,8 +12,7 @@ jobs:
   download:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      issues: write
+      contents: write
 
     steps:
     - name: Checkout Code
@@ -70,14 +69,15 @@ jobs:
           api_responses.log
         if-no-files-found: ignore
 
-    # Debug summary seedha GitHub Issue me post karo — token REDACTED hota hai.
-    # (Logs artifact download har jagah se possible nahi hota, issue sab dekh sakte hain.)
-    - name: Report Debug Summary to Issue
+    # Debug summary GitHub Release notes me post karo — token REDACTED hota hai.
+    # (Repo me Issues band hain aur log-artifact download har jagah possible nahi,
+    #  isliye Release notes use karte hain — API se sab padh sakte hain.)
+    - name: Report Debug Summary as Release
       if: always()
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Safety: token kabhi issue me na jaye
+        # Safety: token kabhi release notes me na jaye
         for f in network.log api_responses.log page.html page_text.txt; do
           [ -f "$f" ] && sed -i -E 's/(playerToken=)[A-Za-z0-9%._-]+/\1REDACTED/g; s/[0-9a-f]{64,}:[0-9a-f]{64,}/TOKEN_REDACTED/g' "$f" || true
         done
@@ -99,9 +99,8 @@ jobs:
           head -n 150 api_responses.log 2>/dev/null || echo "(no api_responses.log)"
           echo '```'
         } > summary.md
-        ISSUE=$(gh issue list --search "debug-report in:title" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
-        if [ -n "$ISSUE" ]; then
-          gh issue comment "$ISSUE" --body-file summary.md
-        else
-          gh issue create --title "debug-report: lecture downloader" --body-file summary.md
-        fi
+        gh release create "debug-run-$GITHUB_RUN_ID" \
+          --target "$GITHUB_SHA" \
+          --title "Debug report run $GITHUB_RUN_ID" \
+          --notes-file summary.md \
+          --prerelease 2>&1 || echo "release create fail (ignore)"
