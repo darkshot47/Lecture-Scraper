@@ -114,9 +114,25 @@ def download_hls(url: str, headers: dict, out_path: str = "downloaded_lecture.ts
     print(f"[+] Segments: {len(segments)} | duration ≈ {dur/60:.1f} min", flush=True)
 
     key = None
-    if key_uri:
+    # Pehle ek segment dekh lo — agar TS sync byte (0x47) hai to stream
+    # asal me unencrypted hai aur KEY line ka koi matlab nahi.
+    encrypted = bool(key_uri)
+    probe = _get(session, segments[0], headers)
+    if probe[:1] == b"\x47":
+        print("[+] Segment 0 MPEG-TS hai (0x47 sync) — stream unencrypted, "
+              "key skip.", flush=True)
+        encrypted = False
+    else:
+        print(f"[*] Segment 0 ke first bytes: {probe[:16].hex()}", flush=True)
+
+    if encrypted and key_uri:
         print(f"[+] Encrypted stream (AES-128), key fetch: {key_uri[:160]}", flush=True)
-        key = fetch_key_with_variants(session, key_uri, headers)
+        try:
+            key = fetch_key_with_variants(session, key_uri, headers)
+        except Exception as e:
+            print(f"[-] {e}", flush=True)
+            print("[*] Key ke bina hi download try kar raha hoon...", flush=True)
+            key = None
 
     parts = [None] * len(segments)
     done = {"n": 0}
