@@ -36,8 +36,25 @@ jobs:
         TARGET_URL: ${{ inputs.target_url }}
       run: python downloader.py
 
+    # FIX: purana path 'downloaded_lecture.mp4' exact tha — yt-dlp aksar
+    # alag extension (.webm/.mkv) banata hai, isliye wildcard use karo.
     - name: Upload Video Artifact
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: downloaded-lecture
-        path: downloaded_lecture.mp4
+        path: downloaded_lecture.*
+        if-no-files-found: warn
+
+    # FIX: lecture na mile to bhi debug files upload karo taaki pata chale
+    # kyun nahi mila (screenshot, page HTML, network log).
+    - name: Upload Debug Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-logs
+        path: |
+          screenshot.png
+          page.html
+          network.log
+        if-no-files-found: ignore
