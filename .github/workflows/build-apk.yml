@@ -81,13 +81,42 @@ jobs:
         run: |
           set -e
           APK=android/app/build/outputs/apk/release/app-release.apk
-          unzip -l "$APK" | head -20
+          echo "== zip listing ==" | tee verify.md
+          unzip -l "$APK" | tee -a verify.md
+          echo | tee -a verify.md
+
+          # 1) manifest + dex + resources hone chahiye (warna APK install hi nahi hoga)
+          for f in AndroidManifest.xml classes.dex resources.arsc; do
+            unzip -l "$APK" | grep -q " $f$" || { echo "MISSING $f" | tee -a verify.md; exit 1; }
+          done
+          DEX=$(unzip -l "$APK" | awk '$4=="classes.dex"{print $1}')
+          echo "- classes.dex: $DEX bytes" | tee -a verify.md
+
+          # 2) badging: package + launchable activity
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          if [ -x "$BT/aapt2" ]; then
+            "$BT/aapt2" dump badging "$APK" 2>/dev/null | head -5 | tee -a verify.md || true
+          fi
+          "$BT/aapt" dump badging "$APK" 2>/dev/null | grep -E "package:|launchable-activity:|sdkVersion|targetSdkVersion" | tee -a verify.md || true
+
+          # 3) recorder asset packaged + valid JS + hooks present
           unzip -p "$APK" assets/inject_webview.js > /tmp/asset.js
           node --check /tmp/asset.js
           grep -q "__lsStartDump" /tmp/asset.js
           grep -q "appendBuffer" /tmp/asset.js
-          echo "APK asset OK: inject_webview.js present with recorder hooks"
-          unzip -p "$APK" classes.dex | strings | grep -c "RELATIVE_PATH" || true
+          echo "- assets/inject_webview.js: $(wc -c < /tmp/asset.js) bytes, hooks OK" | tee -a verify.md
+
+          # 4) MediaStore string dex me hai (save path gallery me jaata hai)
+          if unzip -p "$APK" classes.dex | strings | grep -q "RELATIVE_PATH"; then
+            echo "- MediaStore RELATIVE_PATH: present in dex" | tee -a verify.md
+          else
+            echo "- MediaStore RELATIVE_PATH: NOT FOUND" | tee -a verify.md
+            exit 1
+          fi
+
+          echo | tee -a verify.md
+          echo "- release APK size: $(stat -c%s "$APK") bytes" | tee -a verify.md
+          echo "- sha256: $(sha256sum "$APK" | cut -d' ' -f1)" | tee -a verify.md
 
       - name: Locate APKs
         id: apks
@@ -122,6 +151,10 @@ jobs:
             echo
             echo "Install: APK download -> phone par 'Install unknown apps' allow -> install."
             echo "Ye app sirf un lectures ke liye hai jinhe aap legally dekh sakte hain."
+            echo
+            echo "### Build verification"
+            echo
+            cat verify.md 2>/dev/null || echo "(verify.md missing)"
           } > /tmp/notes.md
           gh release create "$TAG" --draft --title "Lecture Saver APK ${{ inputs.version_name || '1.0' }}" --notes-file /tmp/notes.md
           gh release upload "$TAG" *.apk --clobber
