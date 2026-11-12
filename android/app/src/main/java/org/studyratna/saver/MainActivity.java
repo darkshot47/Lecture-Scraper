@@ -28,6 +28,7 @@ import android.widget.Toast;
 
 import org.json.JSONObject;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -64,6 +65,14 @@ public class MainActivity extends Activity {
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private String recordedBase64 = null;   // recorder ke chunks (partial mp4/webm)
+    private OutputStream streamOut = null;  // chunked MSE dump ka target
+    private Uri streamUri = null;
+    private File streamFile = null;
+    private String streamName = null;
+    private String streamMime = null;
+    private boolean streamIsLegacy = false;
+    private long streamBytes = 0;
+    private String pendingKind = "unknown";
     private String mseKind = "unknown";
     private long mseBytes = 0;
     private String recMime = "";
@@ -221,23 +230,95 @@ public class MainActivity extends Activity {
         Toast.makeText(this, "recorder stop — ab Save dabayein", Toast.LENGTH_SHORT).show();
     }
 
-    /** MSE chunks (lossless) -> file -> Gallery. */
+    /** MSE chunks (lossless) -> file -> Gallery. Bade capture ke liye chunked. */
     private void saveToGallery() {
-        status.setText("capture nikaal rahe hain...");
+        if (mseBytes < 50_000 && (recordedBase64 == null || recordedBase64.length() < 1000)) {
+            status.setText("kuch capture nahi hua — lecture play karke 20-30s rukein, phir Save");
+            Toast.makeText(this, "Pehle lecture play karein (data tabhi aata hai)",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (mseBytes >= 50_000) {
+            startChunkedSave();
+            return;
+        }
+        saveRecorderFallback();
+    }
+
+    /** MSE dump ko stream ki tarah file/MediaStore me likho (memory safe). */
+    private void startChunkedSave() {
+        boolean mp4 = "mp4".equals(mseKind);
+        streamName = "lecture-" + stamp() + (mp4 ? ".mp4" : ".ts");
+        streamMime = mp4 ? "video/mp4" : "video/mp2t";
+        streamBytes = 0;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues cv = new ContentValues();
+                cv.put(MediaStore.Video.Media.DISPLAY_NAME, streamName);
+                cv.put(MediaStore.Video.Media.MIME_TYPE, streamMime);
+                cv.put(MediaStore.Video.Media.RELATIVE_PATH,
+                        Environment.DIRECTORY_MOVIES + "/LectureSaver");
+                cv.put(MediaStore.Video.Media.IS_PENDING, 1);
+                streamUri = getContentResolver().insert(
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv);
+                if (streamUri == null) throw new IllegalStateException("MediaStore insert fail");
+                streamOut = new BufferedOutputStream(
+                        getContentResolver().openOutputStream(streamUri), 1 << 16);
+                streamIsLegacy = false;
+            } else {
+                File dir = new File(Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_MOVIES), "LectureSaver");
+                if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("mkdir fail");
+                streamFile = new File(dir, streamName);
+                streamOut = new BufferedOutputStream(new FileOutputStream(streamFile), 1 << 16);
+                streamIsLegacy = true;
+            }
+        } catch (Exception e) {
+            status.setText("save start fail: " + e.getMessage());
+            closeStream(false);
+            return;
+        }
+        status.setText("save ho raha hai... 0.0 MB");
         web.evaluateJavascript(
-                "(function(){try{return window.__lsDumpMse ? window.__lsDumpMse() : '';}catch(e){return '';}})()",
-                value -> {
-                    String b64 = unquoteJs(value);
-                    if (b64 != null && b64.length() > 1000) {
-                        boolean mp4 = "mp4".equals(mseKind);
-                        String name = "lecture-" + stamp() + (mp4 ? ".mp4" : ".ts");
-                        String mime = mp4 ? "video/mp4" : "video/mp2t";
-                        if (writeToGallery(Base64.decode(b64, Base64.DEFAULT), name, mime)) {
-                            status.setText("Gallery me save ho gaya: Movies/LectureSaver/" + name);
-                            Toast.makeText(this, "Saved: " + name, Toast.LENGTH_LONG).show();
-                            return;
-                        }
-                    }
+                "(function(){try{return window.__lsStartDump ? window.__lsStartDump() : 0;}catch(e){return 0;}})()",
+                null);
+    }
+
+    private void closeStream(boolean ok) {
+        try {
+            if (streamOut != null) {
+                streamOut.flush();
+                streamOut.close();
+            }
+        } catch (Exception ignored) {
+        }
+        streamOut = null;
+        if (ok) {
+            if (!streamIsLegacy && streamUri != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues cv = new ContentValues();
+                cv.put(MediaStore.Video.Media.IS_PENDING, 0);
+                getContentResolver().update(streamUri, cv, null, null);
+            }
+            if (streamIsLegacy && streamFile != null) {
+                sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE,
+                        Uri.fromFile(streamFile)));
+            }
+            status.setText("Gallery me save: Movies/LectureSaver/" + streamName
+                    + String.format(Locale.US, " (%.1f MB)", streamBytes / 1048576.0));
+            Toast.makeText(this, "Saved: " + streamName, Toast.LENGTH_LONG).show();
+        } else {
+            if (streamUri != null) {
+                try { getContentResolver().delete(streamUri, null, null); } catch (Exception ignored) {}
+            }
+            if (streamFile != null && streamFile.exists()) streamFile.delete();
+        }
+        streamUri = null;
+        streamFile = null;
+    }
+
+    private void saveRecorderFallback() {
+        status.setText("recorder ka data save kar rahe hain...");
+        {
                     if (recordedBase64 != null && recordedBase64.length() > 1000) {
                         boolean mp4 = recMime.contains("mp4");
                         String name = "lecture-" + stamp() + (mp4 ? ".mp4" : ".webm");
@@ -251,7 +332,7 @@ public class MainActivity extends Activity {
                     status.setText("kuch capture nahi hua — lecture play karke 20-30s rukein, phir Save");
                     Toast.makeText(MainActivity.this,
                             "Pehle lecture play karein (data tabhi aata hai)", Toast.LENGTH_LONG).show();
-                });
+        }
     }
 
     private String unquoteJs(String value) {
@@ -314,6 +395,30 @@ public class MainActivity extends Activity {
             try {
                 JSONObject o = new JSONObject(json);
                 String type = o.optString("type");
+                if ("mse".equals(type)) {
+                    final byte[] bytes = Base64.decode(o.optString("b64"), Base64.DEFAULT);
+                    final boolean last = o.optBoolean("last");
+                    ui.post(() -> {
+                        try {
+                            if (streamOut != null) streamOut.write(bytes);
+                            streamBytes += bytes.length;
+                            status.setText(String.format(Locale.US,
+                                    "save ho raha hai... %.1f MB", streamBytes / 1048576.0));
+                            if (last) closeStream(true);
+                        } catch (Exception e) {
+                            status.setText("write fail: " + e.getMessage());
+                            closeStream(false);
+                        }
+                    });
+                    return;
+                }
+                if ("mse-done".equals(type) && !o.optBoolean("ok")) {
+                    ui.post(() -> {
+                        status.setText("capture khali hai");
+                        closeStream(false);
+                    });
+                    return;
+                }
                 if ("rec".equals(type)) {
                     recordedBase64 = o.optString("b64");
                 } else if ("log".equals(type)) {

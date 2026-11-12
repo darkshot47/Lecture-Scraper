@@ -77,6 +77,18 @@ jobs:
         working-directory: android
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
+      - name: Verify APK contents
+        run: |
+          set -e
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          unzip -l "$APK" | head -20
+          unzip -p "$APK" assets/inject_webview.js > /tmp/asset.js
+          node --check /tmp/asset.js
+          grep -q "__lsStartDump" /tmp/asset.js
+          grep -q "appendBuffer" /tmp/asset.js
+          echo "APK asset OK: inject_webview.js present with recorder hooks"
+          unzip -p "$APK" classes.dex | strings | grep -c "RELATIVE_PATH" || true
+
       - name: Locate APKs
         id: apks
         run: |

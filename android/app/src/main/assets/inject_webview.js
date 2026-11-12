@@ -161,19 +161,58 @@
   };
 
   /* MSE chunks base64 me nikaalo (bade buffer ke liye chunked). */
-  window.__lsDumpMse = function () {
-    if (!S.mseBytes || S.dumping) return "";
+  /* Chunked dump: bade lecture (100+ MB) par ek hi giant string memory blow
+     kar deti hai. Isliye 2 MB slices base64 me bridge ko bhejte hain aur Java
+     unhe seedha file/MediaStore me likhta hai. */
+  window.__lsStartDump = function () {
+    if (!S.mseBytes || S.dumping) { send({ type: "mse-done", ok: false }); return 0; }
     S.dumping = true;
-    var total = 0, i;
-    for (i = 0; i < S.mse.length; i++) total += S.mse[i].length;
-    var merged = new Uint8Array(total), off = 0;
-    for (i = 0; i < S.mse.length; i++) { merged.set(S.mse[i], off); off += S.mse[i].length; }
-    var bin = "", CH = 8192;
-    for (var p = 0; p < merged.length; p += CH) {
-      bin += String.fromCharCode.apply(null, merged.subarray(p, p + CH));
+
+    var starts = [], acc = 0, i;
+    for (i = 0; i < S.mse.length; i++) { starts.push(acc); acc += S.mse[i].length; }
+    var total = acc;
+    var SLICE = 2 * 1024 * 1024;
+    var off = 0, seq = 0;
+
+    function readRange(from, to) {
+      var out = new Uint8Array(to - from), wrote = 0;
+      for (var k = 0; k < S.mse.length; k++) {
+        var cStart = starts[k], cLen = S.mse[k].length, cEnd = cStart + cLen;
+        if (cEnd <= from) continue;
+        if (cStart >= to) break;
+        var s0 = Math.max(from, cStart) - cStart;
+        var s1 = Math.min(to, cEnd) - cStart;
+        var part = S.mse[k].subarray(s0, s1);
+        out.set(part, wrote);
+        wrote += part.length;
+      }
+      return out;
     }
-    S.dumping = false;
-    return btoa(bin);
+
+    function toB64(u8) {
+      var bin = "", CH = 8192;
+      for (var p = 0; p < u8.length; p += CH) {
+        bin += String.fromCharCode.apply(null, u8.subarray(p, p + CH));
+      }
+      return btoa(bin);
+    }
+
+    function step() {
+      var end = Math.min(off + SLICE, total);
+      var b64 = toB64(readRange(off, end));
+      send({ type: "mse", b64: b64, seq: seq, last: end >= total,
+             kind: S.mseKind, total: total });
+      off = end;
+      seq += 1;
+      if (off < total) {
+        setTimeout(step, 0);
+      } else {
+        S.dumping = false;
+        send({ type: "mse-done", ok: true });
+      }
+    }
+    step();
+    return total;
   };
 
   window.__lsClearMse = function () { S.mse = []; S.mseBytes = 0; };
