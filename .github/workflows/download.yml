@@ -24,6 +24,16 @@ on:
         required: false
         default: "60"
         type: string
+      record_seconds:
+        description: "In-page playback recording kitni der (default 300s)"
+        required: false
+        default: "300"
+        type: string
+      record_mode:
+        description: "1 = playback capture on (agar download block ho to)"
+        required: false
+        default: "1"
+        type: string
   repository_dispatch:
     types: [download-lecture]
   push:
@@ -74,12 +84,20 @@ jobs:
         timeout-minutes: 15
         run: python -m playwright install --with-deps chromium
 
+      # Recorder self-test: asli player ke bina bhi MSE capture + remux verify.
+      # Yeh fail ho to neeche ka download bekaar hai, isliye pehle chalaate hain.
+      - name: Self-test in-page recorder
+        run: python selftest_recorder.py
+
       - name: Mask input URL
         run: echo "::add-mask::$TARGET_URL"
 
       - name: Download lecture
         id: dl
         continue-on-error: true
+        env:
+          RECORD_SECONDS: ${{ inputs.record_seconds || '300' }}
+          RECORD_MODE: ${{ inputs.record_mode || '1' }}
         run: python downloader.py
 
       - name: Show result
@@ -110,6 +128,15 @@ jobs:
           path: |
             debug/
             run_report.md
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload capture (raw)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-capture
+          path: debug/capture_raw.mp4
           if-no-files-found: ignore
           retention-days: 7
 

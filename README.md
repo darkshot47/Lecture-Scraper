@@ -96,3 +96,31 @@ liye PW (Physics Wallah) login valid hona chahiye:
 
 3. Har run ka result ek **draft release** (`run-<id>`) aur `run_report.md` me
    milta hai: token diagnostics, probes, stream candidates, yt-dlp output.
+
+## "Recording" wali baat — iska matlab aur fix
+
+Site ke player (hls.js) ka flow hai: `master.m3u8` → `hls/720/main.m3u8` →
+segments (`000.ts`, `001.ts` …) → `POST /V1/pw/keys/hls/<videoKey>` (app ka apna
+legit key endpoint) → decrypt → `SourceBuffer.appendBuffer()`.
+
+Yani jab lecture **chal raha** hota hai, us waqt compressed media **page ke andar
+hi** maujood hota hai. v4 usi ko capture karta hai (`RECORDER_JS`):
+
+| Rasta | Kaise | Kab chalta hai |
+|---|---|---|
+| A. yt-dlp | browser cookies + Referer/Origin ke saath HLS | signed URL valid ho |
+| B. **In-page capture** | `appendBuffer` hook → fMP4/TS bytes → ffmpeg remux MP4 | player segments load kar le (screen-recording ka lossless version) |
+| C. MediaRecorder | `video.captureStream()` → WebM chunks | MSE path na chale to |
+| D. Manifest refresh | app ka `playback-manifest` se fresh signed URL | token ki cookie expire ho |
+
+`selftest_recorder.py` workflow me har run par chalta hai: ffmpeg se fragment banata
+hai, MSE me append karta hai, capture karke remux karta hai. Ye pass na ho to
+download ka koi matlab nahi.
+
+**Agar player hi segments load na kare** (`mse=0.0MB`), to capture bhi khali
+rahega — us waqt problem server-side hai: expiry wali signed URL, expired PW
+session, ya India-only block. App me lecture play ho raha hai to India ke normal
+network par `python downloader.py` chalane se capture pakka banega.
+
+`RECORD_SECONDS` (default 300) se recording ki length control hoti hai — poora
+lecture chahiye to usse lecture duration (jaise 1500) se bada rakhein.
