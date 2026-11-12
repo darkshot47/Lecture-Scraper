@@ -220,7 +220,20 @@ def refresh_from_manifest(data):
             "Origin": "https://app.studyratna.org"}, timeout=30)
         body = r.json()
     except Exception as e:
-        print(f"    manifest fail: {str(e)[:120]}")
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            try:
+                body = resp.json()
+                err = body.get("error") or {}
+                msg = err.get("message") if isinstance(err, dict) else str(err)
+                print(f"[-] StudyRatna: {msg}")
+                if msg and "PW Session" in msg:
+                    print("    >>> PW login expire ho gaya hai.")
+                    print("    >>> App me PW account dobara login karo, phir naya link banao.")
+            except Exception:
+                print(f"    manifest fail: {str(e)[:120]}")
+        else:
+            print(f"    manifest fail: {str(e)[:120]}")
         return None
 
     if body.get("encrypted"):

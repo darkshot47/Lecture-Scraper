@@ -241,7 +241,8 @@ def pick_working_url(video_url: str, cookie: str | None, headers: dict) -> str |
 def probe_stream(url: str, headers: dict) -> bool:
     """Stream URL ko seedha fetch karke dekho — 403/404 turant pata chal jayega."""
     import urllib.error
-    import urllib.request
+    import urllib.error
+import urllib.request
 
     print(f"[*] PROBE: {url[:120]}", flush=True)
     try:
@@ -387,6 +388,23 @@ def fetch_manifest_video_url(data: dict):
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             body = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        # 401 body me asli wajah hoti hai (PW session expired etc.)
+        raw = ""
+        try:
+            raw = e.read().decode("utf-8", "replace")
+            body = json.loads(raw)
+        except Exception:
+            print(f"[-] Manifest API HTTP {e.code}: {redact(raw)[:200]}", flush=True)
+            return None, None
+        err = body.get("error") or {}
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+        print(f"[-] StudyRatna API (HTTP {e.code}): {msg}", flush=True)
+        if msg and "PW Session" in msg:
+            print("    >>> Aapka PW (Physics Wallah) login expire ho gaya hai.", flush=True)
+            print("    >>> App me PW account dobara login/link karo, phir naya "
+                  "lecture link banao.", flush=True)
+        return None, None
     except Exception as e:
         print(f"[-] Manifest API fail: {redact(str(e))[:300]}", flush=True)
         return None, None
