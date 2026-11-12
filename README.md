@@ -1,126 +1,115 @@
 # Lecture-Scraper
 
-Apne **apne authorized account** ka lecture (StudyRatna / Telegram Mini App) browser
-session se nikaal kar MP4 me save karne ka GitHub Actions workflow.
+StudyRatna (Telegram Mini App) me chalti hui lecture ko **apne device par record
+karke** MP4 me save karne ke tools. GitHub Actions workflow bhi hai, par wo sirf
+tab chalta hai jab server US datacenter IP ko allow kare — aam taur par nahi.
 
-> ⚠️ Sirf un lectures ke liye jinhe aap legally access kar sakte hain. Kisi ka bhi
-> account/session token, DRM ya paywall bypass karne ke liye ise use na karein.
+> Sirf un lectures ke liye jinhe aap legally dekh sakte hain. Ye tools aapke
+> browser me **already play ho rahi** cheez ko save karte hain — koi key/signature
+> forge, DRM/paywall ya geo-bypass nahi karte.
 
-## Kya badla (v1 se v2)
+---
 
-Purana code 10 second ruk kar bas *pehli* `.m3u8`/`manifest` request pakadta tha aur
-yt-dlp ko bilkul wahi URL de deta tha. StudyRatna jaisi SPA me isse kabhi video nahi
-bani — aur failure ke bawajood workflow `success` dikhta rehta tha.
+## Site ka behaviour (jo aapne bataya, aur code se confirm hua)
 
-| Purana problem (logs se) | v2 me fix |
-|---|---|
-| `manifest.json` (PWA file) pakad li jaati thi | exact `.m3u8`/`.mpd`/media match + scoring |
-| player ko play nahi karaya jata tha | autoplay + play-button clicks, 45s tak wait |
-| sirf pehla URL | best (master) playlist chuna jata hai |
-| cookies/headers yt-dlp ko nahi milte | Playwright context cookies + Referer/Origin/UA |
-| `ffmpeg: NOT FOUND` | workflow ffmpeg install karta hai, warna warning |
-| fail hone par exit 0 → green run | proper exit codes, MP4 na bane to run **fail** |
-| token logs me | token/cookie/log-in URLs redact |
-| artifacts/debug nahi | `debug-logs` artifact: network, candidates, page text, screenshot |
+Aapke detail ke mutabik: StudyRatna third-party app hai, aapne koi PW account
+login nahi kiya, lecture aapke token link se **chal raha hai**, par site ka
+"Download" button video ko **gallery me nahi** bhejta.
 
-## Kaise chalayein
+Iska karan site ke JS me saaf milta hai:
 
-1. Telegram app me lecture kholen → "Open in Browser" → address bar se poora URL
-   copy karein (`https://app.studyratna.org/?playerToken=...`).
-   Token ~2 ghante me expire hota hai, isliye run se **turant pehle** banayein.
-2. GitHub → **Actions** → **Download Lecture** → **Run workflow**:
-   - `target_url`: wahi fresh link
-   - `wait_seconds`: default `45` (slow network par `90`)
-3. Run ke baad **Artifacts → downloaded-lecture**.
+- site ka download button `<a href="downloadable_video_url">Download Video (.webm)`
+  hai — yani file **`.webm`** format me aati hai
+- Android gallery / photos app `.webm` ko index nahi karti (sirf mp4/mkv dekhti
+  hai) → "download hua par gallery me nahi" wali feeling
+- player `master.m3u8` → `hls/720/main.m3u8` → `000.ts, 001.ts…` +
+  `POST /V1/pw/keys/hls/<videoKey>` (app ka apna legit key endpoint) chalta hai,
+  yani jab lecture **chal rahi** hoti hai tab media page ke andar maujood hota hai
 
-Exit codes: `2` URL missing, `3` session/token expired, `4` stream URL nahi mili,
-`5` download fail (403/502/geo).
+Matlab: player check karne ki zaroorat nahi — **jab aap dekh sakte hain, tab
+recording pakki hai.** Bas recording aapke device par honi chahiye.
 
-## Agar run fail ho
+---
 
-- `debug/candidates.txt` — kaun se stream URLs mile
-- `debug/network.log` — poora request list (redacted)
-- `debug/page_text.txt` + `screenshot.png` — site ne kya dikhaya
-
-403/502 ka matlab aksar: **token/cookie expire** ya **India ke bahar se block**.
-Aise case me log ek **India (apne ghar ke network)** machine par chalayein:
+## Tarika 1 (recommended): browser me recorder paste karein
 
 ```bash
-pip install -r requirements.txt && python -m playwright install chromium
-TARGET_URL="https://app.studyratna.org/?playerToken=..." python downloader.py
+python build_console.py        # console_paste.txt banata hai (ek line, paste-ready)
 ```
 
-## Kya ye nahi karta
+1. Lecture **laptop/PC ke Chrome** me kholen: Telegram → lecture → ⋮ →
+   "Open in browser" → address copy karke Chrome me paste.
+2. Lecture **play** karein (zaroori — data tabhi aata hai).
+3. `F12` → **Console** → `console_paste.txt` ka poora content paste → Enter.
+4. Right-bottom panel aayega: `MSE: 12.3 MB (mp4)`, `Recorder: 8.1 MB (mp4)`.
+5. `Save MSE` (best quality, lossless) ya `Save Rec` dabayein.
+   Lecture end hote hi khud bhi save ho jaata hai.
 
-Reverse-engineered AES keys, forged CloudFront cookies, session replay, HLS
-decryption-key extraction, DRM/paywall ya geo-restriction bypass — ye sab jaan
-bujh kar shaamil nahi kiya gaya. Access ke liye aapka apna valid session chahiye.
+Output:
+- **Save MSE** → `.mp4` (fMP4) ya `.ts` (HLS segments) — ffmpeg se mp4 me convert
+  kar sakte hain: `ffmpeg -i file.ts -c copy lecture.mp4`
+- **Save Rec** → `.mp4` (Chrome MP4 MediaRecorder support karta hai) warna `.webm`
 
-## Diagnostic: asli 403 ka karan (fresh token ke saath bhi)
+### Android par
 
-`playerToken` **naya** ho sakta hai par uske andar ka CloudFront signed URL
-purana ho sakta hai. Real example (token `auth_date` = 12:08 UTC):
+DevTools console mobile me nahi khulta. Do raste:
+- **Aasan:** laptop par lecture kholen (Telegram Web / link copy) aur wahi recorder
+  chalayein; ya
+- USB debugging + laptop Chrome me `chrome://inspect` → phone ka page → Console me
+  paste.
 
+`page_recorder_snippet.txt` me bookmarklet bhi hai (Chrome mobile me bookmark ka URL
+edit karke paste kar sakte hain).
+
+---
+
+## Tarika 2: kuch bhi install kiye bina (screen record)
+
+Controls wale player par long-press karke "Download / Save" nahi milta to:
+
+- **Android:** notification shade se **Screen Recorder** chalu karein → lecture
+  play karein → recording stop → gallery me mp4.
+- **PC:** OBS / Xbox Game Bar (`Win+G`) se window capture.
+
+Isme quality re-encode hoti hai, par 100% kaam karta hai aur koi setup nahi.
+
+---
+
+## Tarika 3: GitHub Actions (jab server allow kare)
+
+Workflow: `.github/workflows/download.yml` → `target_url` me fresh link.
+
+Kaam kaise karta hai: real Chrome me lecture kholta hai, player ko play karata
+hai, `appendBuffer` se media capture karta hai (in-page recording), ffmpeg se MP4
+banata hai; backup me yt-dlp + manifest-refresh bhi try karta hai.
+
+**Seema:** GitHub runner US datacenter se chalta hai. Logs me `master.m3u8` par
+`403`/`502` aata hai jab:
+- token ke andar ka CloudFront signature expire ho (verified: `DateLessThan`
+  token banane se ~17h purana tha), ya
+- content India-only ho.
+
+Us waqt runner par kuch nahi ho sakta — **Tarika 1/2** hi chalega. Runner ke
+`run_report.md` / draft release me diagnostics milte hain (`codec`, `probe`,
+`recorder mode`, capture bytes).
+
+---
+
+## Files
+
+| File | Kaam |
+|---|---|
+| `page_recorder.js` | In-page recorder (MSE hook + MediaRecorder), save panel |
+| `console_paste.txt` | Wahi recorder, ek line me — DevTools me paste karne ke liye |
+| `build_console.py` | `page_recorder.js` → `console_paste.txt` + bookmarklet |
+| `tools/test_page_recorder.js` | jsdom test: fake MSE/MediaRecorder se capture+save verify |
+| `selftest_recorder.py` | CI test: asli fragment ko MSE me feed karke capture+remux verify |
+| `downloader.py` | GitHub Actions runner ke liye downloader + recorder |
+| `.github/workflows/download.yml` | Workflow (chrome install, self-tests, draft release) |
+
+Tests:
+
+```bash
+node tools/test_page_recorder.js      # npm install jsdom
+python selftest_recorder.py          # ffmpeg + playwright chahiye
 ```
-Token decrypt OK | lecture: Alight Motion Mobile Video Editing 01 ...
-CloudFront signed URL ki limit : 2026-11-11T18:34:49Z   <-- kal expire
-Token banaya gaya              : 2026-11-12T12:08:41Z   <-- abhi
-=> CloudFront resource: https://d1d34p8vz63oiq.cloudfront.net/<videoKey>/*
-```
-
-Matlab: token fresh hai, magar usme embedded signed cookie already expire hai.
-Isliye `player.studyratna.org/.../master.m3u8` 403/502 deta hai. Ye **code ka
-bug nahi** — server ne token me stale signature daala hai.
-
-Solution (v3 me built-in): app ka apna `playback-manifest` refresh endpoint call
-hota hai jo **fresh signed URL + cookie** deta hai. Us endpoint ko kaam karne ke
-liye PW (Physics Wallah) login valid hona chahiye:
-
-- `401 Your PW Session has expired. Please log in again.` aaye to app me
-  PW account **dobara link/login** karo, phir naya lecture link banao.
-- App me lecture **play karke** confirm karo: agar app me bhi nahi chalta to
-  lecture/session server-side hi kharab hai, koi downloader usse nahi la sakta.
-
-## Chalane ke raste (jo actually kaam karte hain)
-
-1. **GitHub UI (recommended)** — Actions → *Download Lecture* → *Run workflow* →
-   `target_url` me fresh link. (Workflow `main` par hona chahiye; is branch ka PR
-   merge karne ke baad button dikhega.)
-2. **repository_dispatch** (token Git me commit kiye bina):
-
-   ```bash
-   gh api -X POST repos/<owner>/<repo>/dispatches \
-     -f event_type=download-lecture \
-     -f "client_payload[url]=https://app.studyratna.org/?playerToken=..."
-   ```
-
-3. Har run ka result ek **draft release** (`run-<id>`) aur `run_report.md` me
-   milta hai: token diagnostics, probes, stream candidates, yt-dlp output.
-
-## "Recording" wali baat — iska matlab aur fix
-
-Site ke player (hls.js) ka flow hai: `master.m3u8` → `hls/720/main.m3u8` →
-segments (`000.ts`, `001.ts` …) → `POST /V1/pw/keys/hls/<videoKey>` (app ka apna
-legit key endpoint) → decrypt → `SourceBuffer.appendBuffer()`.
-
-Yani jab lecture **chal raha** hota hai, us waqt compressed media **page ke andar
-hi** maujood hota hai. v4 usi ko capture karta hai (`RECORDER_JS`):
-
-| Rasta | Kaise | Kab chalta hai |
-|---|---|---|
-| A. yt-dlp | browser cookies + Referer/Origin ke saath HLS | signed URL valid ho |
-| B. **In-page capture** | `appendBuffer` hook → fMP4/TS bytes → ffmpeg remux MP4 | player segments load kar le (screen-recording ka lossless version) |
-| C. MediaRecorder | `video.captureStream()` → WebM chunks | MSE path na chale to |
-| D. Manifest refresh | app ka `playback-manifest` se fresh signed URL | token ki cookie expire ho |
-
-`selftest_recorder.py` workflow me har run par chalta hai: ffmpeg se fragment banata
-hai, MSE me append karta hai, capture karke remux karta hai. Ye pass na ho to
-download ka koi matlab nahi.
-
-**Agar player hi segments load na kare** (`mse=0.0MB`), to capture bhi khali
-rahega — us waqt problem server-side hai: expiry wali signed URL, expired PW
-session, ya India-only block. App me lecture play ho raha hai to India ke normal
-network par `python downloader.py` chalane se capture pakka banega.
-
-`RECORD_SECONDS` (default 300) se recording ki length control hoti hai — poora
-lecture chahiye to usse lecture duration (jaise 1500) se bada rakhein.

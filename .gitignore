@@ -12,3 +12,7 @@ debug/
 __pycache__/
 *.pyc
 .venv/
+
+# jsdom test ke liye local symlink/deps
+tools/node_modules
+node_modules/
