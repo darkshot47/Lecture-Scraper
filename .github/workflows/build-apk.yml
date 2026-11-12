@@ -1,0 +1,96 @@
+name: Build Android APK
+
+# Manual: Actions -> Build Android APK -> Run workflow.
+# APK ban jaane par ek DRAFT release (tag apk-<run>) ke saath attach hota hai;
+# wahan se APK phone par download karke install karein.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Version name (default 1.0)"
+        required: false
+        default: "1.0"
+        type: string
+  push:
+    paths:
+      - "android/**"
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Check WebView injection script
+        run: |
+          node --check android/inject_webview.js
+          echo "inject_webview.js syntax OK"
+          # asset app me hi jaana chahiye (single source of truth)
+          cmp android/inject_webview.js android/app/src/main/assets/inject_webview.js
+          echo "asset copy identical"
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Assemble release APK (debug-signed)
+        working-directory: android
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Locate APKs
+        id: apks
+        run: |
+          set -e
+          ls -la android/app/build/outputs/apk/debug/ android/app/build/outputs/apk/release/
+          cp android/app/build/outputs/apk/debug/app-debug.apk lecture-saver-${{ inputs.version_name || '1.0' }}-debug.apk
+          cp android/app/build/outputs/apk/release/app-release.apk lecture-saver-${{ inputs.version_name || '1.0' }}.apk
+          ls -la *.apk
+          echo "ok=1" >> $GITHUB_OUTPUT
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lecture-saver-apk
+          path: "*.apk"
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish draft release with APK
+        if: always() && steps.apks.outputs.ok == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="apk-${{ github.run_id }}"
+          {
+            echo "Lecture Saver APK (debug-signed, sideload ke liye)"
+            echo
+            echo "- version: ${{ inputs.version_name || '1.0' }}"
+            echo "- commit: ${{ github.sha }}"
+            echo "- run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo "Install: APK download -> phone par 'Install unknown apps' allow -> install."
+            echo "Ye app sirf un lectures ke liye hai jinhe aap legally dekh sakte hain."
+          } > /tmp/notes.md
+          gh release create "$TAG" --draft --title "Lecture Saver APK ${{ inputs.version_name || '1.0' }}" --notes-file /tmp/notes.md
+          gh release upload "$TAG" *.apk --clobber
+          echo "Uploaded to draft release $TAG"
