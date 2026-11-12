@@ -164,17 +164,21 @@ def get_key(session, key_url: str, headers: dict, uuid: str,
       3. api.penpencil.co (PW ka API)
     """
     cands = []
-    if cf_host and uuid:
-        cands += [f"https://{cf_host}/{uuid}/enc.key",
-                  f"https://{cf_host}/{uuid}/hls/720/enc.key",
-                  f"https://{cf_host}/{uuid}/key"]
-    if uuid:
-        cands += [f"https://player.studyratna.org/stream/{uuid}/enc.key",
-                  f"https://player.studyratna.org/stream/{uuid}/hls/720/enc.key"]
-    cands.append(key_url)
+    # India IP par direct penpencil sabse pehle (wahan ye khulta hai)
+    if key_url:
+        cands.append(key_url)
     if uuid:
         cands.append(f"https://api.penpencil.co/v1/videos/get-hls-key"
                      f"?videoKey={uuid}&key=enc.key")
+    # player proxy (?url= form) — playlist ne yahi diya ho to
+    if key_url and "player.studyratna.org" in key_url:
+        cands.append(key_url)
+    # signed CloudFront paths
+    if cf_host and uuid:
+        cands += [f"https://{cf_host}/{uuid}/enc.key",
+                  f"https://{cf_host}/{uuid}/hls/720/enc.key"]
+    if uuid:
+        cands += [f"https://player.studyratna.org/stream/{uuid}/enc.key"]
     variants = [
         {**headers, "client-id": PW_CLIENT_ID, "client-type": "WEB",
          "client-version": "1.0"},
@@ -296,7 +300,19 @@ def download(playlist_url: str, playlist_text: str, headers: dict,
     first = fetch(session, segs[0], headers)
     unencrypted = first[:1] == b"\x47"
 
+    # Manual key: --key <hex> ya HLS_KEY_HEX env
     key = None
+    manual = os.environ.get("HLS_KEY_HEX", "").strip()
+    if len(sys.argv) > 2 and sys.argv[1] == "--key":
+        manual = sys.argv[2].strip()
+    if manual and len(manual) in (32, 64):
+        try:
+            k = bytes.fromhex(manual)
+            if unencrypted or looks_like_ts(k, iv, first):
+                key = k
+                print(f"[+] Manual key use ho rahi hai ({len(k)} bytes)")
+        except Exception:
+            pass
     if not unencrypted and key_url:
         uuid = re.search(
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
@@ -311,8 +327,12 @@ def download(playlist_url: str, playlist_text: str, headers: dict,
             key = None
         if not key:
             raise RuntimeError(
-                "AES key nahi mili. Ye endpoint sirf India IP se khulta hai — "
-                "VPN off karke / mobile data par try karo.")
+                "AES key nahi mili (sab raaste 401/403).\n"
+                "    Option 1: mobile data (India IP) par dobara chalao.\n"
+                "    Option 2: app me video play karke DevTools -> Network ->\n"
+                "              'enc.key' request -> response 16 bytes -> hex copy,\n"
+                "              phir chalao:  python run_local.py --key <32-hex>\n"
+                "    Option 3: app ke player me 'Download Video (.webm)' button.")
 
     parts = [None] * len(segs)
     done = {"n": 0}
