@@ -81,8 +81,14 @@ jobs:
         if [ "${{ inputs.with_browser }}" = "true" ]; then
           python browser_stream_probe.py 2>&1 | tee -a run.log || true
         fi
-        python cffi_probe.py 2>&1 | tee -a run.log || true
-        python mse_capture.py 2>&1 | tee -a run.log || true
+        python keygrab.py 2>&1 | tee -a run.log || true
+        if [ -s hls_key.txt ]; then
+          echo "--- key mil gayi, poora download shuru ---" | tee -a run.log
+          python pw_download.py 2>&1 | tee -a run.log || true
+        fi
+        if ! ls downloaded_lecture.* >/dev/null 2>&1; then
+          python mse_capture.py 2>&1 | tee -a run.log || true
+        fi
         python cf_policy_probe.py 2>&1 | tee -a run.log || true
         python key_final_probe.py 2>&1 | tee -a run.log || true
         if ls downloaded_lecture.* >/dev/null 2>&1; then
