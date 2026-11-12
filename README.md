@@ -55,3 +55,44 @@ TARGET_URL="https://app.studyratna.org/?playerToken=..." python downloader.py
 Reverse-engineered AES keys, forged CloudFront cookies, session replay, HLS
 decryption-key extraction, DRM/paywall ya geo-restriction bypass — ye sab jaan
 bujh kar shaamil nahi kiya gaya. Access ke liye aapka apna valid session chahiye.
+
+## Diagnostic: asli 403 ka karan (fresh token ke saath bhi)
+
+`playerToken` **naya** ho sakta hai par uske andar ka CloudFront signed URL
+purana ho sakta hai. Real example (token `auth_date` = 12:08 UTC):
+
+```
+Token decrypt OK | lecture: Alight Motion Mobile Video Editing 01 ...
+CloudFront signed URL ki limit : 2026-11-11T18:34:49Z   <-- kal expire
+Token banaya gaya              : 2026-11-12T12:08:41Z   <-- abhi
+=> CloudFront resource: https://d1d34p8vz63oiq.cloudfront.net/<videoKey>/*
+```
+
+Matlab: token fresh hai, magar usme embedded signed cookie already expire hai.
+Isliye `player.studyratna.org/.../master.m3u8` 403/502 deta hai. Ye **code ka
+bug nahi** — server ne token me stale signature daala hai.
+
+Solution (v3 me built-in): app ka apna `playback-manifest` refresh endpoint call
+hota hai jo **fresh signed URL + cookie** deta hai. Us endpoint ko kaam karne ke
+liye PW (Physics Wallah) login valid hona chahiye:
+
+- `401 Your PW Session has expired. Please log in again.` aaye to app me
+  PW account **dobara link/login** karo, phir naya lecture link banao.
+- App me lecture **play karke** confirm karo: agar app me bhi nahi chalta to
+  lecture/session server-side hi kharab hai, koi downloader usse nahi la sakta.
+
+## Chalane ke raste (jo actually kaam karte hain)
+
+1. **GitHub UI (recommended)** — Actions → *Download Lecture* → *Run workflow* →
+   `target_url` me fresh link. (Workflow `main` par hona chahiye; is branch ka PR
+   merge karne ke baad button dikhega.)
+2. **repository_dispatch** (token Git me commit kiye bina):
+
+   ```bash
+   gh api -X POST repos/<owner>/<repo>/dispatches \
+     -f event_type=download-lecture \
+     -f "client_payload[url]=https://app.studyratna.org/?playerToken=..."
+   ```
+
+3. Har run ka result ek **draft release** (`run-<id>`) aur `run_report.md` me
+   milta hai: token diagnostics, probes, stream candidates, yt-dlp output.
