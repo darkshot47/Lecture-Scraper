@@ -31,6 +31,42 @@ recording pakki hai.** Bas recording aapke device par honi chahiye.
 
 ---
 
+## Tarika 0 (best): Android app — token URL → Gallery
+
+`.github/workflows/build-apk.yml` se APK banta hai (verified build: JDK 17 +
+Android SDK 34, debug + release APK, draft release me attached).
+
+**Install:** Actions → *Build Android APK* → Run workflow → run khatam hone par
+draft release `apk-<id>` me `lecture-saver-1.0.apk` download → phone par
+install ("Install unknown apps" allow karna hoga).
+
+**Use:**
+1. App kholein, token link paste karein (`https://app.studyratna.org/?playerToken=...`).
+2. **Open** → lecture play karein.
+3. Neeche status dikhega: `capture: 12.3 MB (mp4) | rec: 8.1 MB (mp4) | 240s / 1001s`.
+4. **Save to Gallery** → file seedha
+   `Movies/LectureSaver/lecture-YYYYMMDD-HHmmss.mp4` me jaati hai —
+   **Gallery/Photos me turant dikhti hai**. Koi "download folder me pada hai par
+   gallery me nahi" wali dikkat nahi.
+
+Kaise kaam karta hai (technical):
+
+| Layer | Kya karta hai |
+|---|---|
+| `WebView` | user ka token link kholta hai (site ka apna player chalta hai) |
+| `inject_webview.js` | `SourceBuffer.appendBuffer` hook + MediaRecorder; decrypted media capture |
+| `AndroidBridge` | capture ko 2 MB slices me Java tak bhejta hai (memory-safe) |
+| `MainActivity` | `MediaStore` me `Movies/LectureSaver` par stream likhta hai, `IS_PENDING` ke saath |
+
+Save format: **`.mp4`** (fMP4 capture) — isliye Gallery index karti hai. Sirf HLS
+segments (`.ts`) mile to `.ts` bhi Gallery me chala jaata hai; ffmpeg se mp4:
+`ffmpeg -i file.ts -c copy lecture.mp4`.
+
+App sirf wahi save karta hai jo aap dekh sakte hain — koi login/DRM/geo bypass
+nahi, aur koi data bahar nahi jaata.
+
+---
+
 ## Tarika 1 (recommended): browser me recorder paste karein
 
 ```bash
