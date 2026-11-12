@@ -50,6 +50,25 @@ ke roop me direct download link de deta hai (zip nahi).
 Key nikalne ka tareeka (India IP par): `run_local.py` chala kar terminal me
 dikhi key, ya browser devtools -> Network -> `enc.key` request -> 16 bytes.
 
+## Sabse common blocker: "Your PW Session has expired"
+
+StudyRatna andar se Physics Wallah (PW) ka session use karta hai. Jab wo
+session expire ho jata hai:
+
+- CloudFront video URL ki cookie stale ho jati hai -> **403 Forbidden**
+- `/v1/pw/playback-manifest` -> **401 "Your PW Session has expired"**
+- HLS AES key endpoint bhi 403 deta hai
+
+**Fix:** StudyRatna app me apna PW account dobara login/link karo, phir
+lecture kholo aur naya `playerToken` link banao. Uske baad:
+
+```bash
+python run_local.py      # India me - sab kuch automatic
+```
+
+Script khud token decrypt karti hai, stale cookie par manifest API se fresh
+URL leti hai, segments download + AES decrypt karke `lecture.mp4` deti hai.
+
 ## Notes
 
 - Token **~2 ghante me expire** hota hai; expiry par naya link bhejo.
