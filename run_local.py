@@ -205,6 +205,43 @@ def looks_like_ts(key, iv, segment):
     return AES.new(key, AES.MODE_CBC, iv).decrypt(head)[:1] == b"\x47"
 
 
+def refresh_from_manifest(data):
+    """playback-manifest API se fresh videoUrl + cookie (stale token ke liye)."""
+    init = data.get("initData") or ""
+    ids = (data.get("batchId"), data.get("subjectId"), data.get("scheduleId"))
+    if not init or not all(ids):
+        return None
+    api = (f"https://api-lite.studyratna.org/v1/pw/playback-manifest/"
+           f"{ids[0]}/{ids[1]}/{ids[2]}")
+    try:
+        r = requests.get(api, headers={
+            "x-init-data": init, "Authorization": f"tma {init}",
+            "User-Agent": USER_AGENT, "Referer": "https://app.studyratna.org/",
+            "Origin": "https://app.studyratna.org"}, timeout=30)
+        body = r.json()
+    except Exception as e:
+        print(f"    manifest fail: {str(e)[:120]}")
+        return None
+
+    if body.get("encrypted"):
+        body = decrypt_api(body["encrypted"], init) or {}
+
+    err = body.get("error") or {}
+    if err:
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+        print(f"[-] StudyRatna: {msg}")
+        if msg and "PW Session" in msg:
+            print("    >>> PW (Physics Wallah) login expire ho gaya hai.")
+            print("    >>> App me PW account dobara login/link karo, phir naya link banao.")
+        return None
+
+    payload = body.get("data") or {}
+    if payload.get("videoUrl"):
+        print("    fresh videoUrl mil gaya")
+        return payload["videoUrl"], payload.get("cookie")
+    return None
+
+
 # -------------------------------------------------------------- download ----
 def download(playlist_url: str, playlist_text: str, headers: dict,
              out_ts: str = "lecture.ts"):
@@ -353,6 +390,18 @@ def main():
     print("[*] Playlist dhoondh raha hoon...")
     playlist_url, playlist_text = pick_playlist(
         cloudfront_urls(video_url, cookie), headers, session)
+
+    if not playlist_url:
+        # Token ki cookie stale -> manifest API se fresh URL + cookie
+        print("[*] Token ka URL 403 de raha hai — fresh URL maang raha hoon...")
+        fresh = refresh_from_manifest(data)
+        if fresh:
+            video_url, new_cookie = fresh
+            cookie = new_cookie or cookie
+            headers = headers_for(cookie)
+            playlist_url, playlist_text = pick_playlist(
+                cloudfront_urls(video_url, cookie), headers, session)
+
     if not playlist_url:
         print("[-] Playlist nahi mili. Link expire ho gaya hoga — naya link bhejo.")
         return 1

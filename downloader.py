@@ -310,7 +310,7 @@ def try_token_download() -> bool:
 
     # Agar token me videoUrl nahi hai to playback-manifest API se lo
     if not video_url:
-        video_url = fetch_manifest_video_url(data)
+        video_url, cookie = fetch_manifest_video_url(data)
 
     if not video_url:
         print("[-] Token me bhi videoUrl nahi mila.", flush=True)
@@ -320,6 +320,19 @@ def try_token_download() -> bool:
 
     headers = build_headers(cookie)
     working = pick_working_url(video_url, cookie, headers)
+
+    if not working:
+        # Token ki cookie stale ho gayi -> manifest API se FRESH URL + cookie lo
+        print("\n[*] Token ka URL kaam nahi kar raha (cookie expire?). "
+              "Manifest API se fresh URL laa raha hoon...", flush=True)
+        fresh_url, fresh_cookie = fetch_manifest_video_url(data)
+        if fresh_url:
+            video_url = fresh_url
+            if fresh_cookie:
+                cookie = fresh_cookie
+            headers = build_headers(cookie)
+            working = pick_working_url(video_url, cookie, headers)
+
     if not working:
         # Sab candidate URLs fail — phir bhi yt-dlp ek baar try kar le
         working = video_url
@@ -347,7 +360,11 @@ def try_token_download() -> bool:
 
 
 def fetch_manifest_video_url(data: dict):
-    """playback-manifest API se videoUrl lao (agar token me nahi tha)."""
+    """playback-manifest API se FRESH videoUrl + cookie lao.
+
+    Token ke andar ki cookie ~2 ghante me expire ho jati hai, isliye jab bhi
+    stream 403 de, yahan se naya URL lo. Return: (video_url, cookie) ya (None, None)
+    """
     init_data = data.get("initData") or ""
     batch = data.get("batchId")
     subject = data.get("subjectId")
@@ -372,14 +389,26 @@ def fetch_manifest_video_url(data: dict):
             body = json.loads(r.read().decode("utf-8", "replace"))
     except Exception as e:
         print(f"[-] Manifest API fail: {redact(str(e))[:300]}", flush=True)
-        return None
+        return None, None
 
     if body.get("encrypted"):
         body = decrypt_api_response(body["encrypted"], init_data) or {}
-    if body.get("data", {}).get("videoUrl"):
-        return body["data"]["videoUrl"]
+    err = (body.get("error") or {})
+    if err:
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+        print(f"[-] StudyRatna API error: {msg}", flush=True)
+        if msg and "PW Session" in msg:
+            print("    >>> Aapka PW (Physics Wallah) login expire ho gaya hai.\n"
+                  "    >>> App me PW account dobara login/link karo, phir naya "
+                  "lecture link banao.", flush=True)
+        return None, None
+
+    payload = body.get("data") or {}
+    if payload.get("videoUrl"):
+        print(f"[+] Fresh videoUrl mila (manifest API se)", flush=True)
+        return payload["videoUrl"], payload.get("cookie")
     print(f"[-] Manifest response me videoUrl nahi: {redact(str(body))[:300]}", flush=True)
-    return None
+    return None, None
 
 
 # ---------------------------------------------------------------------------
