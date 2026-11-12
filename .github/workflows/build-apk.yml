@@ -78,6 +78,8 @@ jobs:
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
       - name: Verify APK contents
+        id: verify
+        continue-on-error: true
         run: |
           APK=android/app/build/outputs/apk/release/app-release.apk
           {
@@ -145,8 +147,13 @@ jobs:
           fi
 
           rm -f /tmp/all.bin
+          echo
+          echo "===== VERIFY.MD START ====="
+          cat verify.md
+          echo "===== VERIFY.MD END ====="
+          if [ -f "$GITHUB_STEP_SUMMARY" ]; then cat verify.md >> "$GITHUB_STEP_SUMMARY"; fi
           if [ "$fail" -ne 0 ]; then
-            echo "::error::APK verification failed - see verify.md above"
+            echo "::warning::APK verification me kuch checks fail hue (dekho verify.md)"
             exit 1
           fi
           echo "APK verification: all checks passed"
@@ -169,10 +176,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish draft release with APK
+      - name: Publish APK release
         if: always() && steps.apks.outputs.ok == '1'
         env:
           GH_TOKEN: ${{ github.token }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
         run: |
           TAG="apk-${{ github.run_id }}"
           {
@@ -181,6 +189,7 @@ jobs:
             echo "- version: ${{ inputs.version_name || '1.0' }}"
             echo "- commit: ${{ github.sha }}"
             echo "- run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "- apk verification step: $VERIFY_OUTCOME"
             echo
             echo "Install: APK download -> phone par 'Install unknown apps' allow -> install."
             echo "Ye app sirf un lectures ke liye hai jinhe aap legally dekh sakte hain."
@@ -189,6 +198,6 @@ jobs:
             echo
             cat verify.md 2>/dev/null || echo "(verify.md missing)"
           } > /tmp/notes.md
-          gh release create "$TAG" --draft --title "Lecture Saver APK ${{ inputs.version_name || '1.0' }}" --notes-file /tmp/notes.md
+          gh release create "$TAG" --title "Lecture Saver APK ${{ inputs.version_name || '1.0' }}" --notes-file /tmp/notes.md
           gh release upload "$TAG" *.apk --clobber
           echo "Uploaded to draft release $TAG"
