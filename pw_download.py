@@ -22,6 +22,29 @@ OUT_TS = "downloaded_lecture.ts"
 OUT_MP4 = "downloaded_lecture.mp4"
 
 
+
+def manual_key():
+    """HLS_KEY_HEX env, hls_key.txt ya --key se 16-byte key."""
+    import os
+    raw = os.environ.get("HLS_KEY_HEX", "").strip()
+    if not raw and os.path.exists("hls_key.txt"):
+        try:
+            raw = open("hls_key.txt").read().strip()
+        except Exception:
+            raw = ""
+    if "--key" in sys.argv:
+        i = sys.argv.index("--key")
+        if i + 1 < len(sys.argv):
+            raw = sys.argv[i + 1].strip()
+    if len(raw) in (32, 64):
+        try:
+            return bytes.fromhex(raw)
+        except Exception:
+            return None
+    if len(raw) == 16:
+        return raw.encode("latin-1")
+    return None
+
 def log(msg):
     print(msg, flush=True)
 
@@ -196,7 +219,17 @@ async def main():
             return 1
 
         key = None
-        if key_uri and seg0[:1] != b"\x47":
+        manual = manual_key()
+        if manual and seg0[:1] != b"\x47":
+            from Crypto.Cipher import AES
+            head = seg0[:188]
+            head += b"\x00" * (-len(head) % 16)
+            if AES.new(manual, AES.MODE_CBC, iv).decrypt(head)[:1] == b"\x47":
+                key = manual
+                log(f"[+] manual key valid: {key.hex()}")
+            else:
+                log("[-] manual key invalid, proxy try kar raha hoon")
+        if key is None and key_uri and seg0[:1] != b"\x47":
             key_url = urljoin(media_url, key_uri)
             log(f"[*] AES key fetch: {key_url[:140]}")
             status, key_body = await fetch(ctx, key_url, "key")
