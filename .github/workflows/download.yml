@@ -78,7 +78,10 @@ jobs:
       env:
         TARGET_URL: ${{ inputs.target_url }}
       run: |
-        python browser_stream_probe.py 2>&1 | tee run.log || true
+        if [ "${{ inputs.with_browser }}" = "true" ]; then
+          python browser_stream_probe.py 2>&1 | tee -a run.log || true
+        fi
+        python key_proxy_probe.py 2>&1 | tee -a run.log || true
         cp run.log inspect_report.md
 
     - name: Probe Manifest API (mode=manifest)
