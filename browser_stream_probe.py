@@ -147,6 +147,33 @@ def main():
         else:
             print("[*] playlist nahi khuli — Cloudflare block ya 502", flush=True)
 
+        # 2b) Playwright APIRequestContext (CORS bypass, cf cookies carry)
+        try:
+            ctx.set_extra_http_headers({
+                "Referer": "https://app.studyratna.org/",
+                "Origin": "https://app.studyratna.org",
+                "Accept": "*/*",
+            })
+            for label, u in [
+                ("api-req master", playlist),
+                ("api-req variant", playlist.replace("master.m3u8", "hls/720/main.m3u8")),
+                ("api-req cf", "https://d1d34p8vz63oiq.cloudfront.net/"
+                 f"{uuid}/master.m3u8"),
+                ("api-req key", "https://api.penpencil.co/v1/videos/get-hls-key"
+                 f"?videoKey={uuid}&key=enc.key"),
+            ]:
+                try:
+                    r = ctx.request.get(u, timeout=30000)
+                    body = r.body()
+                    print(f"[{label}] HTTP {r.status} len={len(body)} "
+                          f"ctype={r.headers.get('content-type')}", flush=True)
+                    if len(body) < 1500:
+                        print(f"    {body[:400]!r}", flush=True)
+                except Exception as e:
+                    print(f"[{label}] error {str(e)[:120]}", flush=True)
+        except Exception as e:
+            print(f"[api-req] setup error {str(e)[:120]}", flush=True)
+
         # 3) app page bhi try karo (kya mini-app load hota hai)
         try:
             r3 = page.goto("https://app.studyratna.org/", timeout=45000,
