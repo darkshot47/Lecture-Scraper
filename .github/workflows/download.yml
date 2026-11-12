@@ -79,7 +79,8 @@ jobs:
       env:
         TARGET_URL: ${{ inputs.target_url }}
       run: |
-        python keygrab.py 2>&1 | tee run.log || true
+        python manifest_fresh.py 2>&1 | tee run.log || true
+        python keygrab.py 2>&1 | tee -a run.log || true
         if [ -s hls_key.txt ]; then
           echo "--- key mili, download ---" | tee -a run.log
           python pw_download.py 2>&1 | tee -a run.log || true
