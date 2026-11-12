@@ -84,6 +84,11 @@ async def main():
         def on_response(resp):
             nonlocal key_hex
             u = resp.url
+            if "player.studyratna.org" in u or "penpencil" in u:
+                try:
+                    print(f"[RESP<-] {resp.status} len=? {u[:130]}", flush=True)
+                except Exception:
+                    pass
             if "get-hls-key" in u or ("player.studyratna.org/?url=" in u):
                 status = resp.status
                 print(f"[KEY-RESP] {status} {u[:130]}", flush=True)
@@ -103,6 +108,25 @@ async def main():
                 print(f"[REQ->] {req.method} {req.url[:150]}", flush=True)
         page.on("request", on_req)
 
+        def on_console(msg):
+            t = msg.text
+            if t and not t.startswith("[Telegram") and "clarity" not in t.lower():
+                print(f"[console:{msg.type}] {t[:200]}", flush=True)
+
+        page.on("console", on_console)
+        page.on("pageerror", lambda e: print(f"[pageerror] {str(e)[:200]}", flush=True))
+
+        # video element shadow DOM me bhi ho sakta hai
+        shadow_js = """() => {
+            const out = [];
+            const walk = (root) => {
+                root.querySelectorAll('video').forEach(v => out.push(v.currentSrc || v.src));
+                root.querySelectorAll('*').forEach(el => { if (el.shadowRoot) walk(el.shadowRoot); });
+            };
+            walk(document);
+            return out;
+        }"""
+
         try:
             await page.goto(target, timeout=90000, wait_until="domcontentloaded")
         except Exception as e:
@@ -113,8 +137,16 @@ async def main():
             try:
                 info = await page.evaluate("""() => ({
                     url: location.href,
-                    videos: Array.from(document.querySelectorAll('video'))
-                              .map(v => v.currentSrc || v.src),
+                    videos: (() => {
+                        const out = [];
+                        const walk = (root) => {
+                            root.querySelectorAll('video').forEach(v => out.push(v.currentSrc || v.src));
+                            root.querySelectorAll('*').forEach(el => {
+                                if (el.shadowRoot) walk(el.shadowRoot); });
+                        };
+                        walk(document);
+                        return out;
+                    })(),
                     title: document.title,
                     text: (document.body.innerText || '').slice(0, 200)
                 })""")
