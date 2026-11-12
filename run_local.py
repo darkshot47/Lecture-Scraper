@@ -70,8 +70,13 @@ def decrypt_api(enc: str, init_data: str):
 
 # ------------------------------------------------------------- utilities ----
 def ask_url():
-    if len(sys.argv) > 1:
-        return sys.argv[1].strip()
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if "--key" in sys.argv:
+        i = sys.argv.index("--key")
+        if i + 1 < len(sys.argv):
+            args = [a for a in args if a != sys.argv[i + 1]]
+    if args:
+        return args[0].strip()
     print("Lecture URL paste karo (playerToken wali) aur Enter dabao:")
     return input("> ").strip()
 
@@ -232,8 +237,8 @@ def refresh_from_manifest(data):
                 msg = err.get("message") if isinstance(err, dict) else str(err)
                 print(f"[-] StudyRatna: {msg}")
                 if msg and "PW Session" in msg:
-                    print("    >>> PW login expire ho gaya hai.")
-                    print("    >>> App me PW account dobara login karo, phir naya link banao.")
+                    print("    >>> Server-side playback session expire hai.")
+                    print("    >>> App me lecture ek baar khol ke naya link banao.")
             except Exception:
                 print(f"    manifest fail: {str(e)[:120]}")
         else:
@@ -248,8 +253,8 @@ def refresh_from_manifest(data):
         msg = err.get("message") if isinstance(err, dict) else str(err)
         print(f"[-] StudyRatna: {msg}")
         if msg and "PW Session" in msg:
-            print("    >>> PW (Physics Wallah) login expire ho gaya hai.")
-            print("    >>> App me PW account dobara login/link karo, phir naya link banao.")
+            print("    >>> Server-side playback session expire hai.")
+            print("    >>> App me lecture ek baar khol ke naya link banao.")
         return None
 
     payload = body.get("data") or {}
@@ -360,7 +365,7 @@ def download(playlist_url: str, playlist_text: str, headers: dict,
 def to_mp4(ts_path: str) -> str:
     mp4 = os.path.splitext(ts_path)[0] + ".mp4"
     if not shutil.which("ffmpeg"):
-        print("[!] ffmpeg nahi mila — .ts hi rakha hai (VLC/YouTube me chalta hai)")
+        print("[!] ffmpeg nahi mila — .ts hi rakha hai (VLC me chalta hai)")
         print("    ffmpeg install karke dobara chalao: MP4 ban jayega")
         return ts_path
     print("[*] MP4 bana raha hoon (ffmpeg)...")

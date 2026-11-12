@@ -81,6 +81,7 @@ jobs:
         if [ "${{ inputs.with_browser }}" = "true" ]; then
           python browser_stream_probe.py 2>&1 | tee -a run.log || true
         fi
+        python cf_policy_probe.py 2>&1 | tee -a run.log || true
         python key_final_probe.py 2>&1 | tee -a run.log || true
         if [ -s hls_key.txt ]; then
           echo "--- key mili, full download shuru ---" | tee -a run.log
