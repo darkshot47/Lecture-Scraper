@@ -63,19 +63,20 @@ async def main():
             extra_http_headers={"Accept-Language": "en-IN,en;q=0.9"})
         await ctx.add_init_script(STEALTH_JS)
 
-        # anti-bot script block
-        for pat in BLOCK:
-            await ctx.route(pat, lambda route: asyncio.ensure_future(route.abort()))
-
-        # marketing par redirect block (document navigations only)
+        # Ek hi handler: anti-bot script abort + marketing redirect neutralise
         async def guard(route):
             u = route.request.url
-            if route.request.resource_type == "document" and \
-                    urlparse(u).netloc in ("studyratna.org", "www.studyratna.org"):
-                print(f"[*] blocked redirect -> {u[:80]}", flush=True)
-                await route.abort()
-            else:
-                await route.continue_()
+            rt = route.request.resource_type
+            if "disable-devtool" in u:
+                print(f"[*] blocked anti-bot script", flush=True)
+                return await route.abort()
+            if rt == "document" and urlparse(u).netloc in (
+                    "studyratna.org", "www.studyratna.org"):
+                print(f"[*] neutralised redirect -> {u[:60]}", flush=True)
+                return await route.fulfill(status=200,
+                                           content_type="text/html",
+                                           body="<html><body>ok</body></html>")
+            return await route.continue_()
         await ctx.route("**/*", guard)
 
         page = await ctx.new_page()
@@ -96,6 +97,11 @@ async def main():
                         pass
 
         page.on("response", on_response)
+
+        def on_req(req):
+            if "player.studyratna.org" in req.url or "penpencil" in req.url:
+                print(f"[REQ->] {req.method} {req.url[:150]}", flush=True)
+        page.on("request", on_req)
 
         try:
             await page.goto(target, timeout=90000, wait_until="domcontentloaded")
