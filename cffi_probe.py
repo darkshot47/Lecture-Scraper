@@ -36,11 +36,10 @@ def main():
     best = None
     for imp in ["chrome124", "chrome120", "chrome110", "safari17_0",
                 "chrome"]:
-        for http2 in (True, False):
+        for http2 in (True,):
             for name, url in urls[:1]:
                 try:
-                    r = cr.get(url, headers=HDRS, impersonate=imp,
-                               http2=http2, timeout=30)
+                    r = cr.get(url, headers=HDRS, impersonate=imp, timeout=30)
                     body = r.content
                     tag = f"{imp}/h2={http2}"
                     print(f"[{r.status_code}] len={len(body)} {tag} {name}",
@@ -76,7 +75,7 @@ def main():
             break
     if var:
         vurl = var if var.startswith("http") else f"{BASE}/{var}"
-        r = cr.get(vurl, headers=HDRS, impersonate=imp, http2=http2, timeout=30)
+        r = cr.get(vurl, headers=HDRS, impersonate=imp, timeout=30)
         print(f"[{r.status_code}] variant len={len(r.content)}", flush=True)
         if r.status_code == 200:
             with open("media.m3u8", "wb") as f:
@@ -88,13 +87,12 @@ def main():
                 surl = segs[0]
                 if not surl.startswith("http"):
                     surl = vurl.rsplit("/", 1)[0] + "/" + surl
-                r = cr.get(surl, headers=HDRS, impersonate=imp, http2=http2,
-                           timeout=60)
+                r = cr.get(surl, headers=HDRS, impersonate=imp, timeout=60)
                 print(f"[{r.status_code}] seg0 len={len(r.content)} "
                       f"first={r.content[:1]!r}", flush=True)
 
     for name, url in urls[1:]:
-        r = cr.get(url, headers=HDRS, impersonate=imp, http2=http2, timeout=30)
+        r = cr.get(url, headers=HDRS, impersonate=imp, timeout=30)
         print(f"[{r.status_code}] len={len(r.content)} {name}", flush=True)
         if r.status_code == 200 and len(r.content) in (16, 32):
             print(f"[+++] KEY {r.content.hex()}", flush=True)

@@ -79,7 +79,9 @@ jobs:
       env:
         TARGET_URL: ${{ inputs.target_url }}
       run: |
-        python manifest_fresh.py 2>&1 | tee run.log || true
+        pip install curl_cffi >/dev/null 2>&1 || true
+        python cffi_probe.py 2>&1 | tee run.log || true
+        python manifest_fresh.py 2>&1 | tee -a run.log || true
         python keygrab.py 2>&1 | tee -a run.log || true
         if [ -s hls_key.txt ]; then
           echo "--- key mili, download ---" | tee -a run.log
