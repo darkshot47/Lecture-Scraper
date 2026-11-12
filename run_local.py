@@ -155,12 +155,26 @@ def fetch(session, url, headers, retries=4):
 
 
 # ------------------------------------------------------------------- key ----
-def get_key(session, key_url: str, headers: dict, uuid: str):
-    """AES key lao (India IP par ye endpoint khulta hai)."""
-    cands = [key_url]
+def get_key(session, key_url: str, headers: dict, uuid: str,
+            cf_host: str = "", probe: bytes = b"", iv: bytes = bytes(16)):
+    """
+    AES key lao. Order:
+      1. signed CloudFront paths (cookie ke saath) — sabse likely
+      2. player.studyratna.org proxy
+      3. api.penpencil.co (PW ka API)
+    """
+    cands = []
+    if cf_host and uuid:
+        cands += [f"https://{cf_host}/{uuid}/enc.key",
+                  f"https://{cf_host}/{uuid}/hls/720/enc.key",
+                  f"https://{cf_host}/{uuid}/key"]
     if uuid:
-        cands += [f"https://api.penpencil.co/v1/videos/get-hls-key"
-                  f"?videoKey={uuid}&key=enc.key"]
+        cands += [f"https://player.studyratna.org/stream/{uuid}/enc.key",
+                  f"https://player.studyratna.org/stream/{uuid}/hls/720/enc.key"]
+    cands.append(key_url)
+    if uuid:
+        cands.append(f"https://api.penpencil.co/v1/videos/get-hls-key"
+                     f"?videoKey={uuid}&key=enc.key")
     variants = [
         {**headers, "client-id": PW_CLIENT_ID, "client-type": "WEB",
          "client-version": "1.0"},
@@ -175,7 +189,11 @@ def get_key(session, key_url: str, headers: dict, uuid: str):
                 print(f"[*] key error: {str(e)[:80]}")
                 continue
             if r.status_code == 200 and len(r.content) in (16, 32):
+                if probe and not looks_like_ts(r.content, iv, probe):
+                    print(f"[*] key {url[:60]} -> mili par decrypt fail")
+                    continue
                 print(f"[+] AES key mil gayi ({len(r.content)} bytes)")
+                print(f"    KEY HEX: {r.content.hex()}")
                 return r.content
             print(f"[*] key {url[:60]} -> HTTP {r.status_code}")
     return None
@@ -233,7 +251,11 @@ def download(playlist_url: str, playlist_text: str, headers: dict,
         uuid = re.search(
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
             media_url)
-        key = get_key(session, key_url, headers, uuid.group(0) if uuid else "")
+        cf_m = re.search(r"(d[0-9a-z]+)\.cloudfront\.net", media_url)
+        cf_host = f"{cf_m.group(1)}.cloudfront.net" if cf_m else ""
+        key = get_key(session, key_url, headers,
+                      uuid.group(0) if uuid else "", cf_host=cf_host,
+                      probe=first, iv=iv)
         if key and not looks_like_ts(key, iv, first):
             print("[-] Milī key se decrypt nahi hua — dusri key try karo")
             key = None

@@ -230,7 +230,10 @@ def key_url_candidates(key_url: str, playlist_url: str):
         cands.append(f"https://player.studyratna.org/stream/{uuid}/hls/720/enc.key")
     # duplicate hatao, order banao
     out, seen = [], set()
-    for c in cands:
+    # signed CloudFront / player paths pehle (cookie ke saath chal sakte hain)
+    ordered = [c for c in cands if "cloudfront.net" in c or "player.studyratna" in c]
+    ordered += [c for c in cands if c not in ordered]
+    for c in ordered:
         if c not in seen:
             seen.add(c)
             out.append(c)
