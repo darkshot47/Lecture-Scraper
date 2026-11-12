@@ -114,6 +114,12 @@ def download_hls(url: str, headers: dict, out_path: str = "downloaded_lecture.ts
     print(f"[+] Segments: {len(segments)} | duration ≈ {dur/60:.1f} min", flush=True)
 
     key = None
+    # Workflow se key di gayi ho (India IP par nikali hui) to seedha use karo
+    env_key = os.environ.get("HLS_KEY_HEX", "").strip()
+    if env_key and len(env_key) in (32, 64):
+        key = bytes.fromhex(env_key)
+        print(f"[+] AES key environment se mili ({len(key)} bytes)", flush=True)
+
     # Pehle ek segment dekh lo — agar TS sync byte (0x47) hai to stream
     # asal me unencrypted hai aur KEY line ka koi matlab nahi.
     encrypted = bool(key_uri)
@@ -125,7 +131,17 @@ def download_hls(url: str, headers: dict, out_path: str = "downloaded_lecture.ts
     else:
         print(f"[*] Segment 0 ke first bytes: {probe[:16].hex()}", flush=True)
 
-    if encrypted and key_uri:
+    if key is not None:
+        iv_bytes = bytes.fromhex(key_iv.replace("0x", "")) if key_iv else bytes(16)
+        if not encrypted:
+            key = None
+        elif not _looks_like_ts(probe, key, iv_bytes):
+            print("[!] Env se mili key se decrypt nahi hua — hunting try karunga",
+                  flush=True)
+            key = None
+        else:
+            print("[+] Env key validated (segment decrypt OK)", flush=True)
+    if encrypted and key_uri and key is None:
         print(f"[+] Encrypted stream (AES-128), key fetch: {key_uri[:160]}", flush=True)
         try:
             key = fetch_key_with_variants(session, key_uri, headers,

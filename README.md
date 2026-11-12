@@ -1,41 +1,68 @@
-# Lecture-Scraper
+# Lecture Scraper
 
-Lecture page se video stream nikaal kar download karne wala tool.
-GitHub Actions se chalao — video `downloaded-lecture` artifact me milegi.
+StudyRatna lecture links (`?playerToken=...`) se **seedha video download** karo.
 
-## Kaise chalaye (GitHub Actions)
+## Kyun pehle fail hota tha (asli wajah)
 
-1. GitHub repo → **Actions** tab → **Lecture Downloader** workflow
-2. **Run workflow** → lecture page ka URL daalo → **Run workflow**
-3. Build complete hone par **Artifacts** me se `downloaded-lecture` download karo
+StudyRatna ek **Telegram mini-app** (Next.js SPA) hai:
 
-## Locally chalaye
+1. Page ke HTML me video hoti hi nahi — player JS se chalta hai.
+2. `?playerToken=...` ek **AES-256-CBC encrypted payload** hai
+   (key = `SHA256("5d90298d9598093cf8cb4b55434de5bc")`), jiske andar
+   `{type, initData, lecture, videoUrl, cookie, ...}` hota hai.
+3. `videoUrl` ek **CloudFront signed HLS** (`master.m3u8`) hota hai —
+   `CloudFront-Policy / Key-Pair-Id / Signature` cookie ke bina 403.
+4. HLS segments **AES-128 encrypted** hote hain, aur uski key
+   `https://api.penpencil.co/v1/videos/get-hls-key?...` se aati hai —
+   ye endpoint **sirf India IP** se khulta hai (US/EU datacenter se 403
+   CloudFront "request could not be satisfied").
+
+Point 4 ki wajah se GitHub Actions (US runner) par video ke segments to
+download ho jate hain lekin **decrypt nahi hote** — isliye .ts file
+"can't play" dikhati thi.
+
+## Solution 1 — Local (recommended, India me chalta hai) ✅
 
 ```bash
-pip install playwright yt-dlp
-playwright install --with-deps chromium
-TARGET_URL='https://lecture-page-ka-url' python downloader.py
+pip install requests pycryptodome
+python run_local.py
 ```
 
-## "Stream URL not found" aaye to?
+URL paste karo -> `lecture.mp4` ban jayega (ffmpeg ho to MP4, warna .ts).
 
-Ab script fail hone par ye files banata hai (Actions me `debug-logs` artifact):
+ffmpeg: Windows `winget install ffmpeg`, macOS `brew install ffmpeg`,
+Linux `sudo apt install ffmpeg` (optional, sirf MP4 conversion ke liye).
 
-| File | Matlab |
+## Solution 2 — GitHub Actions (automation)
+
+Repo -> Actions -> **Lecture Downloader** -> Run workflow:
+
+| input | matlab |
 |---|---|
-| `screenshot.png` | Page kaisa dikha — login wall / error / player dikhega |
-| `page.html` | Page ka full HTML |
-| `network.log` | Har network request — stream URL aaya ya nahi, dikhega |
+| `target_url` | lecture ka playerToken wala URL |
+| `video_key` | (optional) 32-hex AES key — agar local run se nikali ho |
+| `mode` | `download` / `detect` (key hunt) / `inspect` (JS analysis) |
+| `with_browser` | real Chromium chahiye to true (slow) |
 
-In files ko dekh kar pata chalega:
-- **Login maang raha hai** → site login ke bina video nahi deti, cookies/login chahiye
-- **Player dikh raha hai par stream nahi** → video DRM-protected ho sakti hai
-- **YouTube/Vimeo embed hai** → ab auto-detect hota hai, yt-dlp se download hoga
+Agar AES key pehle se pata ho to workflow bhi MP4 bana kar **Release asset**
+ke roop me direct download link de deta hai (zip nahi).
 
-## Purani problem (fix ho gayi)
+Key nikalne ka tareeka (India IP par): `run_local.py` chala kar terminal me
+dikhi key, ya browser devtools -> Network -> `enc.key` request -> 16 bytes.
 
-Pehle sirf `.m3u8` dhundha jata tha aur Play button click nahi hota tha,
-isliye stream kabhi start hi nahi hoti thi. Ab:
-- m3u8, MP4, YouTube/Vimeo embeds — sab detect hote hain
-- Play button auto-click + `<video>` tag se src extract hota hai
-- Fail hone par build **red** (fail) dikhega, green nahi — taaki pata chale
+## Notes
+
+- Token **~2 ghante me expire** hota hai; expiry par naya link bhejo.
+- Debug artifacts har run me upload hote hain (`debug-logs`), aur run log
+  GitHub Release notes me bhi chala jata hai.
+- `token`, `cookie` aur signature logs me **REDACTED** rehte hain.
+
+## Files
+
+| file | kaam |
+|---|---|
+| `run_local.py` | local one-command downloader (India IP) |
+| `downloader.py` | workflow downloader: token decrypt -> HLS -> MP4 |
+| `hls_download.py` | custom HLS downloader (cookie on every request) |
+| `probe_key.py` / `probe_browser_key.py` | AES key hunt |
+| `inspect_site.py` | site JS/API reverse-engineering helper |
