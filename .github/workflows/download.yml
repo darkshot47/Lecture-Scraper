@@ -4,25 +4,26 @@ on:
   workflow_dispatch:
     inputs:
       target_url:
-        description: 'StudyRatna / Lecture URL (playerToken wala)'
+        description: 'StudyRatna lecture URL (playerToken wala)'
+        required: false
+        default: ''
+        type: string
+      video_key:
+        description: 'Optional: video UUID (token expire ho gaya ho to)'
         required: false
         default: ''
         type: string
       mode:
-        description: 'download = lecture download karo, inspect = site ka JS/API analysis'
+        description: 'download = lecture download, detect = key hunt, inspect = JS analysis'
         required: false
         default: 'download'
         type: choice
         options:
           - download
+          - detect
           - inspect
-          - diag
-      video_key:
-        description: 'Optional: video UUID (jab token expire ho gaya ho)'
-        required: false
-        type: string
       with_browser:
-        description: 'Browser fallback bhi install karo (slow, sirf normal sites ke liye)'
+        description: 'Browser install karo (real Chromium se key fetch / generic sites)'
         required: false
         default: false
         type: boolean
@@ -30,7 +31,7 @@ on:
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     permissions:
       contents: write
 
@@ -44,24 +45,21 @@ jobs:
         python-version: '3.11'
 
     - name: Install Dependencies
-      timeout-minutes: 10
+      timeout-minutes: 12
       run: |
         python -m pip install --upgrade pip
         pip install yt-dlp pycryptodome requests
-        # ffmpeg runner par usually hota hai; na ho to install (best-effort)
         ffmpeg -version 2>/dev/null | head -1 || (
           sudo apt-get update -qq && timeout 240 sudo apt-get install -y -qq ffmpeg
-        ) || echo "WARN: ffmpeg missing (HLS merge fail ho sakta hai)"
+        ) || echo "WARN: ffmpeg missing"
         if [ "${{ inputs.with_browser }}" = "true" ]; then
           pip install playwright
           timeout 600 playwright install --with-deps chromium || echo "WARN: browser install fail"
-          python -c "from playwright.sync_api import sync_playwright;\
-import contextlib;\
-p=sync_playwright().start(); b=p.chromium.launch(headless=True); print('browser OK'); b.close(); p.stop()" || echo "WARN: browser launch fail"
+          python check_browser.py || echo "WARN: browser launch fail"
         fi
 
-    - name: Run Key Hunter
-      if: inputs.mode == 'diag'
+    - name: Detect Key (mode=detect)
+      if: inputs.mode == 'detect'
       env:
         TARGET_URL: ${{ inputs.target_url }}
         VIDEO_KEY: ${{ inputs.video_key }}
@@ -73,25 +71,29 @@ p=sync_playwright().start(); b=p.chromium.launch(headless=True); print('browser 
         fi
         cp run.log inspect_report.md
 
-    - name: Run Site Inspector
+    - name: Run Site Inspector (mode=inspect)
       if: inputs.mode == 'inspect'
       run: python inspect_site.py || true
 
-    - name: Run Downloader Script
-      if: inputs.mode != 'inspect'
+    - name: Download Lecture (mode=download)
+      if: inputs.mode == 'download'
       env:
         TARGET_URL: ${{ inputs.target_url }}
+        HLS_KEY_HEX: ${{ inputs.video_key }}
         WAIT_SECONDS: '25'
       run: |
         set -o pipefail
         python downloader.py 2>&1 | tee run.log
 
     - name: Upload Video Artifact
+      id: artifact
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: downloaded-lecture
-        path: downloaded_lecture.*
+        path: |
+          downloaded_lecture.mp4
+          downloaded_lecture.ts
         if-no-files-found: warn
 
     - name: Upload Debug Logs
@@ -111,29 +113,32 @@ p=sync_playwright().start(); b=p.chromium.launch(headless=True); print('browser 
           hls_key.txt
         if-no-files-found: ignore
 
-    # Debug summary GitHub Release notes me daal do — ise API se padha ja sakta hai
-    # aur token/signature hamesha REDACTED rehta hai.
-    - name: Report Debug Summary as Release
+    # MP4 ko GitHub Release asset banao -> seedha download link (zip nahi)
+    - name: Publish MP4 as Release (direct download link)
+      id: publish
       if: always()
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        for f in network.log api_responses.log page.html page_text.txt run.log; do
-          [ -f "$f" ] && sed -i -E 's/(playerToken=)[A-Za-z0-9%._-]+/\1REDACTED/g; s/[0-9a-f]{64,}:[0-9a-f]{64,}/TOKEN_REDACTED/g' "$f" || true
-        done
-        {
-          echo "## Debug Report — Run [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
-          echo ""
-          echo "### Run log (run.log, last 200 lines)"
-          echo '```'
-          tail -n 200 run.log 2>/dev/null || echo "(no run.log)"
-          echo '```'
-        } > summary.md
-        if [ -f inspect_report.md ]; then
-          cp inspect_report.md summary.md
+        TAG="lecture-$(date +%Y%m%d-%H%M%S)"
+        cp run.log summary.md 2>/dev/null || echo "(no run.log)" > summary.md
+        if [ -f downloaded_lecture.mp4 ]; then
+          echo "## Lecture MP4 ready ✅" > notes.md
+          echo "" >> notes.md
+          grep -m1 "^\[+\] Lecture:" run.log >> notes.md 2>/dev/null || true
+          echo "" >> notes.md
+          echo "Release asset: downloaded_lecture.mp4 (direct download, zip nahi)" >> notes.md
+          gh release create "$TAG" downloaded_lecture.mp4 \
+            --title "Lecture MP4 $(date +%Y-%m-%d)" --notes-file notes.md || true
+        elif [ -f downloaded_lecture.ts ]; then
+          echo "## Lecture ready (TS) — MP4 remux nahi hua" > notes.md
+          gh release create "$TAG" downloaded_lecture.ts \
+            --title "Lecture TS $(date +%Y-%m-%d)" --notes-file notes.md || true
+        else
+          gh release create "debug-run-$GITHUB_RUN_ID" --target "$GITHUB_SHA" \
+            --title "Debug report run $GITHUB_RUN_ID" --notes-file summary.md \
+            --prerelease 2>&1 || echo "release create fail"
         fi
-        gh release create "debug-run-$GITHUB_RUN_ID" \
-          --target "$GITHUB_SHA" \
-          --title "Debug report run $GITHUB_RUN_ID" \
-          --notes-file summary.md \
-          --prerelease 2>&1 || echo "release create fail (ignore)"
+        gh release view "$TAG" --json assets,body \
+          --jq '.assets[] | "DIRECT LINK: " + .url' 2>/dev/null || true
+        gh release view "$TAG" --json body --jq .body 2>/dev/null || true
