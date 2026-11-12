@@ -1,32 +1,45 @@
 name: Download Lecture
 
-# Manual only: Actions -> Download Lecture -> Run workflow.
-# `target_url` me APNE account ka fresh lecture link daalein
-# (app.studyratna.org/?playerToken=...). Token ~2 ghante me expire hota hai,
-# isliye har run se turant pehle naya link banayein.
+# Triggers:
+#  1) workflow_dispatch  -> Actions tab se manually (target_url input).
+#  2) repository_dispatch (event_type: download-lecture) -> token ko Git me
+#     commit kiye bina bhejne ka rasta:
+#
+#       gh api -X POST repos/<owner>/<repo>/dispatches \
+#         -f event_type=download-lecture \
+#         -f "client_payload[url]=https://app.studyratna.org/?playerToken=..."
+#
+# Token ~2 ghante me expire hota hai aur uske andar ka CloudFront signature bhi
+# aksar pehle hi expire hota hai, isliye run se turant pehle fresh link banayein.
 
 on:
   workflow_dispatch:
     inputs:
       target_url:
-        description: "Fresh lecture URL with playerToken (app se copy kiya hua)"
+        description: "Fresh lecture URL with playerToken"
         required: true
         type: string
       wait_seconds:
-        description: "Kitni der player ko stream load karne dena (default 45)"
+        description: "Player ko stream load karne dena (seconds)"
         required: false
-        default: "45"
+        default: "60"
         type: string
+  repository_dispatch:
+    types: [download-lecture]
   push:
     paths:
       - ".github/workflows/download.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: download-lecture-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  TARGET_URL: ${{ inputs.target_url || github.event.client_payload.url }}
+  WAIT_SECONDS: ${{ inputs.wait_seconds || '60' }}
 
 jobs:
   download:
@@ -40,7 +53,6 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      # DNS fix: runners kabhi-kabhi pypi/playwright hosts resolve nahi karte
       - name: Fix DNS
         run: |
           echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
@@ -60,41 +72,76 @@ jobs:
 
       - name: Install Chromium for Playwright
         timeout-minutes: 15
-        run: |
-          python -m playwright install --with-deps chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Mask input URL
+        run: echo "::add-mask::$TARGET_URL"
 
       - name: Download lecture
-        env:
-          TARGET_URL: ${{ inputs.target_url }}
-          WAIT_SECONDS: ${{ inputs.wait_seconds }}
+        id: dl
+        continue-on-error: true
         run: python downloader.py
 
       - name: Show result
         if: always()
         run: |
-          ls -la downloaded_lecture.* 2>/dev/null || echo "downloaded_lecture.*: Koi file nahi bani"
+          ls -la downloaded_lecture.* 2>/dev/null || echo "no downloaded_lecture.*"
           ls -la debug/ 2>/dev/null || true
-          echo "--- candidates ---"
-          cat debug/candidates.txt 2>/dev/null | head -30 || true
+          echo "--- report ---"
+          cat run_report.md 2>/dev/null || echo "no report"
 
-      - name: Upload lecture
-        if: success()
+      - name: Upload lecture artifact
+        if: steps.dl.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: downloaded-lecture
           path: |
             downloaded_lecture.mp4
-            downloaded_lecture.ts
             downloaded_lecture.mkv
+            downloaded_lecture.ts
           if-no-files-found: error
+          retention-days: 7
 
-      # Debug bundle: token/cookie redacted hai, par ise public repo me
-      # release karna phir bhi avoid karein.
       - name: Upload debug logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-logs
-          path: debug/
+          path: |
+            debug/
+            run_report.md
           if-no-files-found: ignore
           retention-days: 7
+
+      # Result ko ek DRAFT release me rakhte hain: main branch push par bhi
+      # kabhi public na ho, aur token kabhi body/asset me na jaye.
+      - name: Publish result (draft release)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.dl.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TAG="run-${{ github.run_id }}"
+          TITLE="Lecture run #${{ github.run_number }} — $OUTCOME"
+          {
+            echo "Workflow result: **$OUTCOME**"
+            echo "Run: $RUN_URL"
+            echo
+            cat run_report.md 2>/dev/null || echo "no run_report.md"
+          } > /tmp/notes.md
+
+          gh release create "$TAG" --draft --title "$TITLE" --notes-file /tmp/notes.md || \
+            gh release edit "$TAG" --draft --title "$TITLE" --notes-file /tmp/notes.md
+
+          for f in downloaded_lecture.mp4 downloaded_lecture.mkv downloaded_lecture.ts; do
+            if [ -s "$f" ]; then
+              gh release upload "$TAG" "$f" --clobber && echo "uploaded $f"
+            fi
+          done
+
+      - name: Fail job if download failed
+        if: steps.dl.outcome != 'success'
+        run: |
+          echo "::error::Lecture download nahi hui — run_report.md dekho."
+          exit 1

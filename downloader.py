@@ -1,64 +1,67 @@
 """
-Lecture Downloader v2 - browser-session based, token safe.
+Lecture Downloader v3 - browser-session based, honest diagnostics.
 
-Kyun ye rewrite zaroori tha
----------------------------
-Purana downloader (v1) sirf 10 second wait karke *pehli* request pakadta tha
-jisme ".m3u8" ya "manifest" string ho. StudyRatna jaisi SPA/Telegram Mini-App
-me ye kaam nahi karta:
+v1 problem (logs se): 10s blind wait, pehli `.m3u8`/`manifest` request pakadna,
+cookies/headers yt-dlp ko nahi dena, ffmpeg missing, aur fail hone par bhi exit 0.
 
-  * page ke HTML me video nahi hoti; player JS se, user ke Play ke baad load hoti hai
-  * "manifest" match hone par `/manifest.json` (PWA file) pakdi ja sakti thi
-  * stream CloudFront/session cookies aur Referer/Origin headers maangta hai,
-    jo yt-dlp ko kabhi nahi diye gaye
-  * ffmpeg installed hi nahi tha -> HLS merge fail
-  * failure par script 0 return karti thi, isliye workflow "green" dikhta tha
-    jabki koi video banti hi nahi thi
+v3 flow
+-------
+1. `TARGET_URL` me diya `?playerToken=...` decrypt karke **sirf diagnostics**
+   nikaalte hain: lecture ka naam, ids, aur token ke andar wale CloudFront
+   cookie ki expiry. (Koi key forge nahi - bas report.)
+2. Real headless Chromium me lecture khulta hai, player ko play karaya jata hai
+   (autoplay + play buttons), har request/response log hota hai.
+3. Sabse accha stream URL (master.m3u8 > variant > mpd > mp4) chunte hain,
+   browser ke cookies (Netscape file) + Referer/Origin/UA ke saath yt-dlp chalate hain.
+4. Backup rasta: app ka apna `playback-manifest` refresh endpoint (jaisa site karti
+   hai) se fresh signed URL + cookie lene ki koshish.
+5. Report (`run_report.md`) likhte hain, token/cookie redact karte hain, aur video
+   na bane to non-zero exit dete hain (workflow red - jhoothi success nahi).
 
-v2 kya karta hai
-----------------
-  1. Diya gaya `TARGET_URL` (aapke apne logged-in account se nikala *fresh*
-     `?playerToken=...` link) real headless Chromium me kholta hai.
-  2. Player ko user ki tarah play karata hai (video element + play buttons),
-     har request/response ko log karta hai, aur browser dwara actually play
-     ki ja rahi HLS/DASH/media URL ko uske headers + cookies ke saath pakadta hai.
-  3. Browser context ke cookies Netscape cookie-file me likhta hai aur yt-dlp ko
-     Referer/Origin/User-Agent + cookiefile ke saath chala kar MP4 banata hai.
-  4. Token/cookie/signature log se REDACT karta hai; debug artifacts likhta hai;
-     aur video na banne par non-zero exit code deta hai (workflow red).
-
-Ye script kya NAHI karti hai: koi reverse-engineered encryption key, forged
-CloudFront cookie, session replay, HLS decryption-key extraction ya geo-block
-bypass nahi. Access ke liye hamesha aapka apna valid, authorized session chahiye.
+Ye script kya NAHI karti: reverse-engineered AES/HLS key forging, CloudFront
+signature forge, DRM/paywall ya geo-block bypass. Access ke liye aapka apna valid
+authorized session chahiye.
 """
 
 from __future__ import annotations
 
 import asyncio
 import glob
+import hashlib
+import json
 import os
 import re
 import shutil
 import sys
 import time
+import urllib.error
+import urllib.request
+from base64 import b64decode
+from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import yt_dlp
 from playwright.async_api import async_playwright
 
 TARGET_URL = os.environ.get("TARGET_URL", "").strip()
-WAIT_SECONDS = max(5, int(os.environ.get("WAIT_SECONDS", "45")))
+WAIT_SECONDS = max(5, int(os.environ.get("WAIT_SECONDS", "60")))
+ATTEMPTS = max(1, int(os.environ.get("ATTEMPTS", "2")))
 OUTPUT_BASE = "downloaded_lecture"
-COOKIE_FILE = Path(".cookies.txt")  # sensitive: gitignored, kabhi upload mat karo
+COOKIE_FILE = Path(".cookies.txt")
 DEBUG_DIR = Path("debug")
+REPORT_FILE = Path("run_report.md")
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
-# Playlist/manifest.json wale false positive se bachne ke liye exact extensions.
+# Sirf diagnostics ke liye: site ka public web-token seed (decryptForWeb ka port).
+WEB_TOKEN_KEY_SEED = "5d90298d9598093cf8cb4b55434de5bc"
+API_KEY_SEED = "939567f60cc4728ee81fc28fae7458af"
+MANIFEST_API = "https://api-lite.studyratna.org/v1/pw/playback-manifest"
+
 HLS_RE = re.compile(r"\.m3u8(?:\?|$)", re.IGNORECASE)
 DASH_RE = re.compile(r"\.mpd(?:\?|$)", re.IGNORECASE)
 MEDIA_RE = re.compile(r"\.(?:mp4|webm|mkv|mov)(?:\?|$)", re.IGNORECASE)
@@ -84,14 +87,14 @@ PLAY_SELECTORS = (
 )
 
 START = time.monotonic()
+NOTES: list[str] = []
 
 
 # ---------------------------------------------------------------------------
-# Logging / redaction
+# Logging / redaction / report
 # ---------------------------------------------------------------------------
 
 def redact(text: object) -> str:
-    """Token, cookie aur signature kabhi log file me plain na jayein."""
     s = str(text)
     s = re.sub(r"(playerToken=)[^&\s\"'<>]+", r"\1<REDACTED>", s, flags=re.I)
     s = re.sub(r"(token=)[A-Za-z0-9%._~+\-/=]{24,}", r"\1<REDACTED>", s, flags=re.I)
@@ -106,11 +109,48 @@ def redact(text: object) -> str:
 
 
 def log(msg: object) -> None:
-    print(f"[{time.monotonic() - START:6.1f}s] {redact(msg)}", flush=True)
+    line = redact(msg)
+    print(f"[{time.monotonic() - START:6.1f}s] {line}", flush=True)
+
+
+def note(msg: object) -> None:
+    """Report me ek bullet add karo (logs ke liye bhi)."""
+    text = redact(msg)
+    NOTES.append(text)
+    log(text)
+
+
+def write_report(status: str, detail: str = "") -> None:
+    lines = [
+        "# Run report",
+        "",
+        f"- result: **{status}**",
+        f"- time: {datetime.now(timezone.utc).isoformat()}",
+        f"- url host: {urlparse(TARGET_URL).netloc if TARGET_URL else '(none)'}",
+        f"- python: {sys.version.split()[0]}",
+        f"- ffmpeg: {shutil.which('ffmpeg') or 'NOT FOUND'}",
+        "",
+        "## Findings",
+        "",
+    ]
+    lines += [f"- {n}" for n in NOTES] or ["- (none)"]
+    if detail:
+        lines += ["", "## Detail", "", "```", redact(detail)[:6000], "```"]
+    REPORT_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("\n===== REPORT START =====", flush=True)
+    print(REPORT_FILE.read_text(encoding="utf-8"), flush=True)
+    print("===== REPORT END =====", flush=True)
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def ts(epoch: int) -> str:
+    return datetime.fromtimestamp(int(epoch), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def stream_score(url: str) -> int:
-    """Sabse pehle master playlist, phir koi bhi HLS, phir DASH, phir direct file."""
     u = url.lower()
     if HLS_RE.search(u):
         if "master" in u:
@@ -126,13 +166,171 @@ def stream_score(url: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Token diagnostics (read-only; koi key forge nahi)
+# ---------------------------------------------------------------------------
+
+def token_diagnostics() -> dict:
+    """playerToken decrypt karke sirf report karo ki andar kya hai / kya expire hua."""
+    info: dict = {}
+    try:
+        qs = parse_qs(urlparse(TARGET_URL).query)
+        raw = (qs.get("playerToken") or [""])[0]
+        if not raw:
+            note("URL me playerToken param nahi mila.")
+            return info
+        token = unquote(raw)
+        if ":" not in token:
+            note("playerToken format unexpected (no ':' separator).")
+            return info
+        iv_hex, ct_hex = token.split(":", 1)
+        try:
+            from Crypto.Cipher import AES
+            from Crypto.Util.Padding import unpad
+        except ImportError:
+            note("pycryptodome nahi hai - token diagnostics skip.")
+            return info
+        key = hashlib.sha256(WEB_TOKEN_KEY_SEED.encode()).digest()
+        pt = unpad(AES.new(key, AES.MODE_CBC, bytes.fromhex(iv_hex)).decrypt(
+            bytes.fromhex(ct_hex)), 16)
+        data = json.loads(pt.decode("utf-8", "replace"))
+        info = data
+        lecture = data.get("lecture") or {}
+        topic = (lecture.get("topic")
+                 or (lecture.get("videoDetails") or {}).get("name") or "(unknown)")
+        note(f"Token decrypt OK | lecture: {topic}")
+        note(f"IDs: batch={data.get('batchId')} subject={data.get('subjectId')} "
+             f"schedule={data.get('scheduleId')} type={data.get('type')}")
+        if data.get("videoUrl"):
+            note(f"Token ke andar stream URL: {data['videoUrl']}")
+        cookie = data.get("cookie") or ""
+        pol = re.search(r"CloudFront-Policy=([^;]+)", cookie)
+        if pol:
+            try:
+                v = pol.group(1).replace("-", "+").replace("_", "/")
+                v += "=" * (-len(v) % 4)
+                raw_policy = b64decode(v).decode("utf-8", "replace")
+                policy, _ = json.JSONDecoder().raw_decode(raw_policy)
+                cond = policy["Statement"][0]["Condition"]
+                less = cond.get("DateLessThan", {}).get("AWS:EpochTime")
+                greater = cond.get("DateGreaterThan", {}).get("AWS:EpochTime")
+                res = policy["Statement"][0].get("Resource")
+                note(f"CloudFront signed URL ki limit: {ts(less)} (abhi {ts(now_utc().timestamp())})")
+                note(f"CloudFront resource: {res}")
+                if less and int(less) < now_utc().timestamp():
+                    note(f"!! Token ke andar wala CloudFront signature ALREADY EXPIRE hai "
+                         f"({ts(less)}). Isliye 403 aa raha hai: token naya hai par "
+                         f"usme embedded signed-URL purana hai.")
+                if greater and int(greater) > now_utc().timestamp():
+                    note("!! CloudFront policy ka DateGreaterThan future me hai "
+                         "(signature abhi valid nahi ho sakta).")
+            except Exception as exc:
+                note(f"CloudFront policy parse fail: {exc}")
+        elif cookie:
+            note("Cookie mila par CloudFront-Policy nahi - parse skip.")
+        else:
+            note("Token me cookie nahi hai.")
+    except Exception as exc:
+        note(f"Token diagnostics fail: {type(exc).__name__}: {exc}")
+    return info
+
+
+# ---------------------------------------------------------------------------
+# HTTP helpers (plain urllib; browser nahi chahiye)
+# ---------------------------------------------------------------------------
+
+def http_get(url: str, headers: dict, timeout: int = 30) -> tuple[int, bytes, dict]:
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read(4000), dict(resp.headers)
+    except urllib.error.HTTPError as exc:
+        body = b""
+        try:
+            body = exc.read(1000)
+        except Exception:
+            pass
+        return exc.code, body, dict(exc.headers or {})
+    except Exception as exc:
+        return 0, str(exc).encode(), {}
+
+
+def probe(url: str, headers: dict, label: str) -> bool:
+    code, body, _ = http_get(url, headers)
+    snippet = redact(body[:160].decode("utf-8", "replace")).replace("\n", " ")
+    note(f"probe[{label}] HTTP {code or 'ERR'} :: {snippet[:120]}")
+    return code == 200
+
+
+def decrypt_api_response(enc: str, init_data: str) -> dict | None:
+    """App ke encrypted API response ko wahi tarah decrypt karo jise web client karta hai."""
+    try:
+        from Crypto.Cipher import AES
+        from Crypto.Util.Padding import unpad
+        seed = API_KEY_SEED + (init_data or "")[:50]
+        key = hashlib.sha256(seed.encode()).digest()
+        iv_hex, ct_hex = enc.split(":", 1)
+        pt = unpad(AES.new(key, AES.MODE_CBC, bytes.fromhex(iv_hex)).decrypt(
+            bytes.fromhex(ct_hex)), 16)
+        return json.loads(pt.decode("utf-8", "replace"))
+    except Exception as exc:
+        note(f"manifest decrypt fail: {type(exc).__name__}: {exc}")
+        return None
+
+
+def manifest_refresh(info: dict) -> tuple[str | None, str | None]:
+    """Site ka apna playback-manifest endpoint - fresh signed URL + cookie."""
+    init_data = (info or {}).get("initData") or ""
+    batch = (info or {}).get("batchId")
+    subject = (info or {}).get("subjectId")
+    schedule = (info or {}).get("scheduleId")
+    if not (init_data and batch and subject and schedule):
+        note("Manifest refresh skip (ids/initData adhoora).")
+        return None, None
+    url = f"{MANIFEST_API}/{batch}/{subject}/{schedule}"
+    variants = {
+        "x-init-data": {"x-init-data": init_data, "Accept": "application/json"},
+        "authorization-tma": {"Authorization": f"tma {init_data}", "Accept": "application/json"},
+        "both": {"x-init-data": init_data, "Authorization": f"tma {init_data}",
+                 "Accept": "application/json"},
+    }
+    base = {
+        "User-Agent": USER_AGENT,
+        "Referer": "https://app.studyratna.org/",
+        "Origin": "https://app.studyratna.org",
+    }
+    for label, extra in variants.items():
+        headers = {**base, **extra}
+        code, body, _ = http_get(url, headers)
+        text = body.decode("utf-8", "replace")
+        note(f"manifest[{label}] HTTP {code or 'ERR'} :: {redact(text)[:200]}")
+        if code != 200:
+            continue
+        try:
+            payload = json.loads(text)
+        except Exception:
+            continue
+        if payload.get("encrypted"):
+            decrypted = decrypt_api_response(payload["encrypted"], init_data) or {}
+            if not decrypted:
+                continue
+            note("manifest response encrypted - app ke key se decrypt ho gaya.")
+            payload = decrypted
+        data = payload.get("data") or payload
+        video_url = data.get("videoUrl")
+        if video_url:
+            note(f"manifest se fresh URL mila: {video_url}")
+            return video_url, data.get("cookie")
+    return None, None
+
+
+# ---------------------------------------------------------------------------
 # Browser capture
 # ---------------------------------------------------------------------------
 
 class Capture:
     def __init__(self) -> None:
         self.requests: list[str] = []
-        self.candidates: list[str] = []          # scorer ke liye URLs
+        self.candidates: list[str] = []
         self.headers_by_url: dict[str, dict] = {}
         self.page_text = ""
         self.page_html = ""
@@ -148,7 +346,6 @@ class Capture:
             if url not in self.candidates:
                 self.candidates.append(url)
                 log(f"[+] stream candidate: {url}")
-            # Browser ke apne headers (Referer/Origin/Cookie/UA) preserve karo.
             try:
                 self.headers_by_url[url] = dict(request.headers)
             except Exception:
@@ -168,7 +365,6 @@ class Capture:
         return max(self.candidates, key=lambda u: (stream_score(u), -len(u)))
 
     def headers_for(self, url: str) -> dict:
-        """yt-dlp ke liye sirf safe, useful headers."""
         raw = self.headers_by_url.get(url, {})
         wanted = ("user-agent", "referer", "origin", "accept", "accept-language")
         out = {}
@@ -180,20 +376,17 @@ class Capture:
         if TARGET_URL:
             parsed = urlparse(TARGET_URL)
             if parsed.netloc:
-                if not out.get("referer"):
-                    out["referer"] = f"{parsed.scheme}://{parsed.netloc}/"
-                if not out.get("origin"):
-                    out["origin"] = f"{parsed.scheme}://{parsed.netloc}"
+                out.setdefault("referer", f"{parsed.scheme}://{parsed.netloc}/")
+                out.setdefault("origin", f"{parsed.scheme}://{parsed.netloc}")
         return out
 
 
 def write_netscape_cookies(cookies: list[dict]) -> Path | None:
-    """Playwright context cookies -> yt-dlp readable Netscape cookie file."""
     if not cookies:
         return None
     lines = [
         "# Netscape HTTP Cookie File\n",
-        "# This file contains session credentials - do not commit or upload.\n",
+        "# Session credentials - do not commit or upload.\n",
     ]
     for c in cookies:
         domain = str(c.get("domain", "")).strip()
@@ -219,7 +412,6 @@ def write_netscape_cookies(cookies: list[dict]) -> Path | None:
 
 
 async def nudge_player(page) -> None:
-    """Player tabhi stream mangta hai jab use play kiya jaye - user jaisa click."""
     for frame in page.frames:
         try:
             await frame.evaluate(
@@ -260,7 +452,6 @@ async def browser_capture() -> tuple[Capture, dict]:
         page = await context.new_page()
         page.on("request", capture.on_request)
         page.on("response", capture.on_response)
-
         try:
             log(f"[*] Opening lecture page (token redacted): {TARGET_URL.split('?')[0]}")
             try:
@@ -275,7 +466,6 @@ async def browser_capture() -> tuple[Capture, dict]:
                     last_nudge = time.monotonic()
                     await nudge_player(page)
                 if capture.best():
-                    # Cookies abhi set ho rahe honge - thoda sa extra grace.
                     await asyncio.sleep(2)
                     break
                 await asyncio.sleep(1)
@@ -295,7 +485,8 @@ async def browser_capture() -> tuple[Capture, dict]:
             except Exception:
                 pass
             try:
-                await page.screenshot(path=str(DEBUG_DIR / "screenshot.png"), timeout=10000)
+                await asyncio.sleep(0.3)
+                await page.screenshot(path=str(DEBUG_DIR / "screenshot.png"), timeout=15000)
             except Exception:
                 pass
         finally:
@@ -325,10 +516,10 @@ def write_debug(capture: Capture) -> None:
     )
 
 
-def download(url: str, headers: dict, cookie_path: Path | None) -> bool:
+def download(url: str, headers: dict, cookie_path: Path | None, label: str) -> bool:
     if not shutil.which("ffmpeg"):
-        log("[!] ffmpeg nahi mila - HLS ko MP4 me merge nahi ho payega.")
-    log(f"[*] yt-dlp start: {url}")
+        note("ffmpeg nahi mila - HLS merge fail ho sakta hai.")
+    note(f"yt-dlp try [{label}]: {url}")
 
     opts = {
         "outtmpl": f"{OUTPUT_BASE}.%(ext)s",
@@ -336,7 +527,7 @@ def download(url: str, headers: dict, cookie_path: Path | None) -> bool:
         "merge_output_format": "mp4",
         "noplaylist": True,
         "retries": 5,
-        "fragment_retries": 5,
+        "fragment_retries": 10,
         "concurrent_fragment_downloads": 5,
         "http_headers": headers,
         "overwrites": True,
@@ -345,13 +536,12 @@ def download(url: str, headers: dict, cookie_path: Path | None) -> bool:
     }
     if cookie_path and cookie_path.exists():
         opts["cookiefile"] = str(cookie_path)
-        log(f"[*] cookiefile use ho raha hai ({len(cookie_path.read_text().splitlines())} lines)")
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
     except Exception as exc:
-        log(f"[-] yt-dlp fail: {exc}")
+        note(f"yt-dlp [{label}] fail: {type(exc).__name__}: {exc}")
         return False
 
     files = [
@@ -359,12 +549,12 @@ def download(url: str, headers: dict, cookie_path: Path | None) -> bool:
         if not f.endswith((".part", ".ytdl", ".temp"))
     ]
     if not files:
-        log("[-] yt-dlp chala par output file nahi bani.")
+        note(f"yt-dlp [{label}] chala par output file nahi bani.")
         return False
-    for f in sorted(files, key=lambda x: x.stat().st_size, reverse=True):
-        log(f"[+] File: {f} ({f.stat().st_size / (1024 * 1024):.1f} MB)")
-    if max(f.stat().st_size for f in files) < 100_000:
-        log("[-] Output file bahut chhoti hai - likely error page, video nahi.")
+    biggest = max(files, key=lambda x: x.stat().st_size)
+    note(f"output: {biggest} ({biggest.stat().st_size / (1024 * 1024):.1f} MB)")
+    if biggest.stat().st_size < 200_000:
+        note("output bahut chhoti hai - error page lagti hai, video nahi.")
         return False
     return True
 
@@ -373,66 +563,112 @@ def download(url: str, headers: dict, cookie_path: Path | None) -> bool:
 # Main
 # ---------------------------------------------------------------------------
 
-async def main_async() -> int:
+async def run() -> int:
     DEBUG_DIR.mkdir(exist_ok=True)
     if not TARGET_URL:
-        log("[-] TARGET_URL khali hai. Fresh playerToken wala URL do.")
+        note("TARGET_URL khali hai. repository_dispatch/workflow_dispatch me bhejo.")
+        write_report("NO-INPUT")
         return 2
-    if "playerToken=" not in TARGET_URL and "token=" not in TARGET_URL:
-        log("[!] URL me playerToken nahi mila - player shayad authorized na ho.")
-    if not shutil.which("ffmpeg"):
-        log("[!] WARNING: ffmpeg missing. Workflow me `apt-get install ffmpeg` chahiye.")
+    if "playerToken=" not in TARGET_URL:
+        note("URL me playerToken nahi - player authorized na ho.")
 
-    capture, extra = await browser_capture()
-    write_debug(capture)
+    info = token_diagnostics()
 
-    text = capture.page_text.lower()
-    if any(p in text for p in EXPIRED_PATTERNS):
-        log("[-] Site ne 'session/token expired' ya 'unauthorized' dikhaya.")
-        log("    => App me apne account se lecture khol kar NAYA playerToken link banao.")
-        return 3
-
-    url = capture.best()
-    if not url:
-        # Last resort: page text/HTML me koi media URL? (SPA kabhi inline deti hai)
-        for source in (capture.page_html, capture.page_text):
-            for match in URL_IN_TEXT_RE.finditer(redact(source)):
-                candidate = match.group(0).rstrip("),;]}")
-                if stream_score(candidate) > 0:
-                    capture.candidates.append(candidate)
-                    break
-        url = capture.best()
-    if not url:
-        log("[-] Stream URL nahi mili. debug/network.log aur debug/page_text.txt dekho.")
-        log("    Sabse aam karan: purana/expired token, ya player play hi nahi hua.")
-        return 4
-
-    log(f"[+] Selected stream: {url}")
-    cookie_path = write_netscape_cookies(extra.get("cookies", []))
-    headers = capture.headers_for(url)
-    log(f"[*] Headers: {', '.join(sorted(headers))}")
-
-    ok = download(url, headers, cookie_path)
-    if cookie_path:
+    last_detail = ""
+    for attempt in range(1, ATTEMPTS + 1):
+        note(f"--- attempt {attempt}/{ATTEMPTS} ---")
         try:
-            cookie_path.unlink()  # session credentials disk par na chhodein
-        except OSError:
-            pass
-    if not ok:
-        log("[-] Download fail. 403/502 aaye to token fresh karo ya apne network se run karo.")
-        return 5
+            capture, extra = await browser_capture()
+        except Exception as exc:
+            note(f"browser capture fail: {type(exc).__name__}: {exc}")
+            time.sleep(5)
+            continue
 
-    log("[+] Lecture download ho gayi.")
-    return 0
+        write_debug(capture)
+        text = (capture.page_text or "").lower()
+        if any(p in text for p in EXPIRED_PATTERNS):
+            note("Page ne 'session/token expired' ya 'unauthorized' dikhaya.")
+        if capture.candidates:
+            note("browser ne stream request(s) pakdi: " + ", ".join(
+                redact(c)[:120] for c in capture.candidates[:5]))
+        else:
+            note("browser me koi .m3u8/.mpd/media request nahi aayi.")
+        for url, status in list(capture.response_status.items()):
+            if stream_score(url) > 0:
+                note(f"stream response {status} :: {redact(url)[:140]}")
+
+        cookie_path = write_netscape_cookies(extra.get("cookies", []))
+        note(f"browser cookies: {len(extra.get('cookies', []))}  -> cookiefile: "
+             f"{'YES' if cookie_path else 'NO'}")
+
+        streams: list[tuple[str, dict, str]] = []
+        best = capture.best()
+        if best:
+            streams.append((best, capture.headers_for(best), "browser"))
+
+        # Token ke andar ka URL + manifest refresh (app jaisa hi) - backup raste
+        token_url = (info or {}).get("videoUrl")
+        token_cookie = (info or {}).get("cookie")
+        if token_url:
+            hdr = {"User-Agent": USER_AGENT,
+                   "Referer": "https://app.studyratna.org/",
+                   "Origin": "https://app.studyratna.org"}
+            if token_cookie:
+                hdr["Cookie"] = token_cookie
+            if not best or token_url != best:
+                streams.append((token_url, hdr, "token"))
+
+        for url, hdr, label in list(streams):
+            ok = await asyncio.to_thread(probe, url, hdr, label)
+            if not ok:
+                note(f"stream [{label}] HTTP fail - koi aur rasta try kar rahe hain.")
+
+        fresh_url, fresh_cookie = manifest_refresh(info)
+        if fresh_url:
+            hdr = {"User-Agent": USER_AGENT,
+                   "Referer": "https://app.studyratna.org/",
+                   "Origin": "https://app.studyratna.org"}
+            if fresh_cookie:
+                hdr["Cookie"] = fresh_cookie
+            streams.insert(0, (fresh_url, hdr, "manifest"))
+
+        for url, hdr, label in streams:
+            if download(url, hdr, cookie_path, label):
+                if cookie_path:
+                    try:
+                        cookie_path.unlink()
+                    except OSError:
+                        pass
+                write_report("SUCCESS", f"downloaded from {label}: {url}")
+                return 0
+
+        last_detail = f"attempt {attempt}: koi bhi stream download nahi hui"
+        if cookie_path:
+            try:
+                cookie_path.unlink()
+            except OSError:
+                pass
+        if attempt < ATTEMPTS:
+            note("5s baad dobara try (token/cookie refresh ho sakta hai)...")
+            await asyncio.sleep(5)
+
+    note("Saare raste fail. Sabse aam karan: embedded CloudFront signature expire, "
+         "PW session expired, ya datacenter IP block (India-only content).")
+    write_report("FAIL", last_detail)
+    return 5
 
 
 def main() -> int:
     try:
-        return asyncio.run(main_async())
+        return asyncio.run(run())
     except KeyboardInterrupt:
         return 130
     except Exception as exc:
-        log(f"[-] Unexpected error: {exc}")
+        note(f"Unexpected error: {type(exc).__name__}: {exc}")
+        try:
+            write_report("ERROR")
+        except Exception:
+            pass
         return 1
 
 
