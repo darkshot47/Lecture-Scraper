@@ -63,6 +63,48 @@ def main():
 
         page = ctx.new_page()
 
+        # 0) pehle app page (Cloudflare cookies set ho jayen)
+        try:
+            rapp = page.goto("https://app.studyratna.org/", timeout=60000,
+                             wait_until="domcontentloaded")
+            print(f"[app-first] HTTP {rapp.status if rapp else 'n/a'}", flush=True)
+            page.wait_for_timeout(3000)
+        except Exception as e:
+            print(f"[app-first] error {str(e)[:120]}", flush=True)
+
+        # 0b) in-page fetch: playlist + manifest (browser context, cf cookies)
+        js = """async (u) => {
+            try {
+                const r = await fetch(u, {credentials: 'include'});
+                const t = await r.text();
+                return {status: r.status, len: t.length, body: t.slice(0, 900)};
+            } catch (e) { return {error: String(e)}; }
+        }"""
+        for label, u in [("fetch playlist", playlist),
+                         ("fetch variant", playlist.replace("master.m3u8",
+                                                            "hls/720/main.m3u8"))]:
+            try:
+                info = page.evaluate(js, u)
+                print(f"[{label}] {json.dumps(info)[:700]}", flush=True)
+            except Exception as e:
+                print(f"[{label}] error {str(e)[:120]}", flush=True)
+
+        init = data.get("initData") or ""
+        man = ("https://api-lite.studyratna.org/v1/pw/playback-manifest/"
+               f"{data.get('batchId')}/{data.get('subjectId')}/{data.get('scheduleId')}")
+        try:
+            info = page.evaluate("""async ([u, init]) => {
+                try {
+                    const r = await fetch(u, {credentials: 'include',
+                        headers: {'x-init-data': init, 'Authorization': 'tma ' + init}});
+                    const t = await r.text();
+                    return {status: r.status, body: t.slice(0, 600)};
+                } catch (e) { return {error: String(e)}; }
+            }""", [man, init])
+            print(f"[fetch manifest] {json.dumps(info)[:700]}", flush=True)
+        except Exception as e:
+            print(f"[fetch manifest] error {str(e)[:120]}", flush=True)
+
         def show(label, resp):
             if not resp:
                 print(f"[{label}] no response", flush=True)
