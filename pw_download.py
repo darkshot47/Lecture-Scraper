@@ -248,6 +248,38 @@ async def main():
                 log(f"[-] key nahi mili (HTTP {status}, len={len(key_body)})")
 
         if seg0[:1] != b"\x47" and not key:
+            # derive-guess: PW me aksar key uuid/secret se banti hai
+            from Crypto.Cipher import AES
+            import hashlib
+            head = seg0[:188]
+            head += b"\x00" * (-len(head) % 16)
+            seeds = [uuid or "", (uuid or "").replace("-", ""),
+                     "enc.key", key_uri or "",
+                     "5eb393ee95fab7468a79d189",
+                     "5d90298d9598093cf8cb4b55434de5bc",
+                     "939567f60cc4728ee81fc28fae7458af"]
+            cands = []
+            for sd in seeds:
+                b = sd.encode()
+                for fn in (hashlib.md5, hashlib.sha1, hashlib.sha256):
+                    dg = fn(b).digest()
+                    if len(dg) >= 16:
+                        cands.append(dg[:16])
+                        cands.append(dg[-16:])
+                cands.append((b + b"\x00" * 16)[:16])
+            for c in cands:
+                try:
+                    if AES.new(c, AES.MODE_CBC, iv).decrypt(head)[:1] == b"\x47":
+                        key = c
+                        log(f"[+] DERIVED KEY: {c.hex()}")
+                        break
+                except Exception:
+                    continue
+            if key:
+                with open("hls_key.txt", "w") as f:
+                    f.write(key.hex())
+
+        if seg0[:1] != b"\x47" and not key:
             log("[-] Stream encrypted hai aur key nahi mili — abort")
             await browser.close()
             return 1
