@@ -1,10 +1,12 @@
 """
-keygrab.py — app page ke andar key + media capture
-==================================================
-Pichle run me page ke andar playlist 200 aayi aur hls.js ne decrypt karke
-media MSE me daala (3.1 MB) — yaani AES key page ke andar chalti hai.
-Ab har media/key request ko route level par retry + pacing ke saath
-jaane dete hain, aur 16/32-byte response ko key samajh kar save karte hain.
+keygrab.py — app page ke andar se AES key capture (non-invasive)
+===============================================================
+Page ko bilkul nahi chhedte: anti-bot script block + marketing redirect
+stub, baaki sab as-is. Har response observe karte hain; 16/32-byte body
+milte hi wo AES key hai -> hls_key.txt.
+
+Key mile ke baad segments ka kaam pw_download.py karta hai (wo 106
+segments pehle bhi la chuka hai).
 """
 
 import asyncio
@@ -20,45 +22,6 @@ STEALTH_JS = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 Object.defineProperty(navigator, 'languages', {get: () => ['en-IN','en']});
 window.chrome = window.chrome || {runtime: {}};
-window.__hits = [];
-(function () {
-  const of = window.fetch;
-  if (of) window.fetch = async function (...a) {
-    const r = await of.apply(this, a);
-    try {
-      const u = (typeof a[0] === 'string') ? a[0] : (a[0] && a[0].url) || '';
-      const c = r.clone();
-      c.arrayBuffer().then(b => {
-        if (b.byteLength <= 64)
-          window.__hits.push({u: String(u).slice(0, 300), n: b.byteLength,
-            b64: btoa(String.fromCharCode.apply(null, new Uint8Array(b)))});
-      }).catch(()=>{});
-    } catch (e) {}
-    return r;
-  };
-  const oo = XMLHttpRequest.prototype.open;
-  const os = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open = function (m, u) {
-    this.__u = u; return oo.apply(this, arguments);
-  };
-  XMLHttpRequest.prototype.send = function () {
-    this.addEventListener('load', () => {
-      try {
-        const t = this.responseType;
-        if (t === 'arraybuffer' && this.response && this.response.byteLength <= 64) {
-          const b = new Uint8Array(this.response);
-          window.__hits.push({u: String(this.__u).slice(0, 300), n: b.length,
-            b64: btoa(String.fromCharCode.apply(null, b))});
-        } else if ((!t || t === 'text') && typeof this.responseText === 'string'
-                   && this.responseText.length <= 44) {
-          window.__hits.push({u: String(this.__u).slice(0, 300),
-            n: this.responseText.length, txt: this.responseText});
-        }
-      } catch (e) {}
-    });
-    return os.apply(this, arguments);
-  };
-})();
 """
 
 VIDEO_JS = """() => {
@@ -74,14 +37,98 @@ VIDEO_JS = """() => {
 }"""
 
 
-def save_key(b: bytes):
+def save_key(b: bytes, src: str):
     if len(b) in (16, 32):
         hx = b.hex()
         with open("hls_key.txt", "w") as f:
             f.write(hx)
-        print(f"[+++] KEY CAPTURED ({len(b)} bytes): {hx}", flush=True)
+        print(f"[+++] KEY CAPTURED ({len(b)}B) from {src[:120]}", flush=True)
+        print(f"[+++] KEY HEX: {hx}", flush=True)
         return True
     return False
+
+
+async def attempt(browser, target, n):
+    state = {"key": False}
+    ctx = await browser.new_context(user_agent=UA, locale="en-IN",
+                                    viewport={"width": 1366, "height": 768})
+    await ctx.add_init_script(STEALTH_JS)
+
+    async def guard(route):
+        u = route.request.url
+        if "disable-devtool" in u:
+            return await route.abort()
+        if (route.request.resource_type == "document"
+                and urlparse(u).netloc in ("studyratna.org", "www.studyratna.org")):
+            return await route.fulfill(status=200, content_type="text/html",
+                                       body="<html><body>ok</body></html>")
+        return await route.continue_()
+
+    await ctx.route("**/*", guard)
+    page = await ctx.new_page()
+
+    async def inspect(resp):
+        u = resp.url
+        try:
+            cl = int(resp.headers.get("content-length") or 0)
+        except Exception:
+            cl = 0
+        cand = ("url=" in u or "key" in u.lower() or 0 < cl <= 64
+                or ".m3u8" in u or ".ts" in u)
+        if not cand:
+            return
+        try:
+            body = await resp.body()
+        except Exception:
+            return
+        tag = u.split("?")[0][-45:]
+        if ".m3u8" in u:
+            print(f"    [{resp.status}] PLAYLIST {len(body)}B {tag}", flush=True)
+            if body[:7] == b"#EXTM3U":
+                txt = body.decode("utf-8", "replace")
+                for ln in txt.splitlines():
+                    if ln.startswith("#EXT-X-KEY"):
+                        print(f"      KEY-LINE: {ln[:200]}", flush=True)
+            return
+        if ".ts" in u:
+            return
+        print(f"    [{resp.status}] len={len(body)} {u[:150]}", flush=True)
+        if save_key(body, u):
+            state["key"] = True
+        elif len(body) <= 64 and body:
+            try:
+                txt = body.decode("utf-8", "replace")
+                if txt.startswith("{"):
+                    print(f"      body: {txt[:120]}", flush=True)
+            except Exception:
+                pass
+
+    page.on("response", lambda r: asyncio.create_task(inspect(r)))
+
+    try:
+        await page.goto(target, timeout=90000, wait_until="domcontentloaded")
+    except Exception as e:
+        print(f"    goto: {str(e)[:100]}", flush=True)
+
+    for i in range(24):
+        await page.wait_for_timeout(3000)
+        try:
+            info = await page.evaluate(VIDEO_JS)
+        except Exception:
+            info = {}
+        d = info.get("duration") or 0
+        if i % 3 == 0:
+            print(f"    {3*(i+1)}s dur={d} buf={info.get('bufferedEnd')}",
+                  flush=True)
+        if state["key"]:
+            print("    key mil gayi — ruk raha hoon", flush=True)
+            break
+        if d > 1 and (info.get("bufferedEnd") or 0) > 8:
+            print("    playback chalu (media aa raha) — key request dekh raha",
+                  flush=True)
+
+    await ctx.close()
+    return state["key"]
 
 
 async def main():
@@ -91,123 +138,26 @@ async def main():
     if "playerToken" not in target:
         print("[-] TARGET_URL chahiye")
         return 2
-
-    got = {"key": False}
-    seen = set()
+    if os.path.exists("hls_key.txt"):
+        os.remove("hls_key.txt")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=[
             "--no-sandbox", "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
             "--autoplay-policy=no-user-gesture-required"])
-        ctx = await browser.new_context(user_agent=UA, locale="en-IN",
-                                        viewport={"width": 1366, "height": 768})
-        await ctx.add_init_script(STEALTH_JS)
-
-        async def handler(route):
-            req = route.request
-            u = req.url
-            rt = req.resource_type
-            if "disable-devtool" in u:
-                return await route.abort()
-            if rt == "document" and urlparse(u).netloc in (
-                    "studyratna.org", "www.studyratna.org"):
-                return await route.fulfill(status=200, content_type="text/html",
-                                           body="<html><body>ok</body></html>")
-            interesting = (".m3u8" in u or ".ts" in u or "url=" in u
-                           or "enc.key" in u or "get-hls-key" in u)
-            if not interesting:
-                return await route.continue_()
-
-            short = u.split("/")[-1][:40] or u[:40]
-            for attempt in range(10):
-                try:
-                    resp = await route.fetch(timeout=60000)
-                except Exception:
-                    await asyncio.sleep(1.5 * (attempt + 1))
-                    continue
-                body = b""
-                try:
-                    body = await resp.body()
-                except Exception:
-                    pass
-                if resp.status == 200:
-                    if "url=" in u or "key" in short.lower():
-                        print(f"    [200] {short} len={len(body)} "
-                              f"ct={resp.headers.get('content-type')}",
-                              flush=True)
-                    if 0 < len(body) <= 32:
-                        print(f"    [SMALL {len(body)}] {u[:160]} -> "
-                              f"{body[:32].hex()}", flush=True)
-                        if save_key(body):
-                            got["key"] = True
-                    if body[:7] == b"#EXTM3U":
-                        print(f"    [PLAYLIST] {len(body)} bytes", flush=True)
-                    return await route.fulfill(response=resp)
-                if short not in seen or attempt == 9:
-                    print(f"    [{resp.status}] {short} (try {attempt+1})",
-                          flush=True)
-                    seen.add(short)
-                await asyncio.sleep(1.2 * (attempt + 1))
-            return await route.fulfill(status=403, body=b"")
-
-        await ctx.route("**/*", handler)
-        page = await ctx.new_page()
-        try:
-            await page.goto(target, timeout=90000, wait_until="domcontentloaded")
-        except Exception as e:
-            print(f"[*] goto: {str(e)[:100]}", flush=True)
-
-        started = False
-        for i in range(30):
-            await page.wait_for_timeout(3000)
+        ok = False
+        for n in range(4):
+            print(f"[*] attempt {n+1}/4", flush=True)
             try:
-                info = await page.evaluate(VIDEO_JS)
-            except Exception:
-                info = {}
-            if (info.get("duration") or 0) > 1:
-                if not started:
-                    print(f"[+] player chalu: dur={info['duration']:.0f}s",
-                          flush=True)
-                    started = True
-            if i % 4 == 0:
-                print(f"    {3*(i+1)}s dur={info.get('duration')} "
-                      f"buf={info.get('bufferedEnd')}", flush=True)
-            # in-page hooks ke hits check karo
-            try:
-                hits = await page.evaluate(
-                    "() => (window.__hits || []).splice(0, 20)")
-            except Exception:
-                hits = []
-            for h in hits or []:
-                u = h.get("u", "")
-                print(f"    [hook] n={h.get('n')} {u[:140]}", flush=True)
-                if h.get("b64"):
-                    try:
-                        b = base64.b64decode(h["b64"])
-                        if save_key(b):
-                            got["key"] = True
-                    except Exception:
-                        pass
-            if got["key"] and (info.get("bufferedEnd") or 0) > 20:
-                break
-
-        if not got["key"]:
-            print("[*] key direct nahi mili — page ke andar key request "
-                  "dhoondh raha hoon...", flush=True)
-            try:
-                hits = await page.evaluate(
-                    "() => (window.__hits || []).splice(0, 50)")
-                for h in hits or []:
-                    print(f"    [hit] n={h.get('n')} {str(h.get('u'))[:160]}",
-                          flush=True)
-            except Exception:
-                pass
-
+                if await attempt(browser, target, n):
+                    ok = True
+                    break
+            except Exception as e:
+                print(f"    attempt error: {str(e)[:120]}", flush=True)
         await browser.close()
-
-    print("[=] KEY MILI" if got["key"] else "[=] key nahi mili", flush=True)
-    return 0 if got["key"] else 1
+    print("[=] KEY MILI" if ok else "[=] key nahi mili", flush=True)
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
