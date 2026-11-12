@@ -79,44 +79,77 @@ jobs:
 
       - name: Verify APK contents
         run: |
-          set -e
           APK=android/app/build/outputs/apk/release/app-release.apk
-          echo "== zip listing ==" | tee verify.md
-          unzip -l "$APK" | tee -a verify.md
-          echo | tee -a verify.md
+          {
+            echo "### APK verification"
+            echo
+            echo "size: $(stat -c%s "$APK") bytes"
+            echo "sha256: $(sha256sum "$APK" | cut -d' ' -f1)"
+            echo
+            echo '```'
+            unzip -l "$APK"
+            echo '```'
+            echo
+          } | tee verify.md
 
-          # 1) manifest + dex + resources hone chahiye (warna APK install hi nahi hoga)
+          fail=0
           for f in AndroidManifest.xml classes.dex resources.arsc; do
-            unzip -l "$APK" | grep -q " $f$" || { echo "MISSING $f" | tee -a verify.md; exit 1; }
+            if unzip -l "$APK" | awk '{print $NF}' | grep -qx "$f"; then
+              echo "- OK core entry: $f" | tee -a verify.md
+            else
+              echo "- MISSING core entry: $f" | tee -a verify.md
+              fail=1
+            fi
           done
-          DEX=$(unzip -l "$APK" | awk '$4=="classes.dex"{print $1}')
-          echo "- classes.dex: $DEX bytes" | tee -a verify.md
 
-          # 2) badging: package + launchable activity
-          BT="$ANDROID_HOME/build-tools/34.0.0"
-          if [ -x "$BT/aapt2" ]; then
-            "$BT/aapt2" dump badging "$APK" 2>/dev/null | head -5 | tee -a verify.md || true
-          fi
-          "$BT/aapt" dump badging "$APK" 2>/dev/null | grep -E "package:|launchable-activity:|sdkVersion|targetSdkVersion" | tee -a verify.md || true
+          DEX_BYTES=$(unzip -l "$APK" | awk '$NF=="classes.dex"{print $(NF-3)}')
+          echo "- classes.dex size: ${DEX_BYTES:-unknown}" | tee -a verify.md
 
-          # 3) recorder asset packaged + valid JS + hooks present
-          unzip -p "$APK" assets/inject_webview.js > /tmp/asset.js
-          node --check /tmp/asset.js
-          grep -q "__lsStartDump" /tmp/asset.js
-          grep -q "appendBuffer" /tmp/asset.js
-          echo "- assets/inject_webview.js: $(wc -c < /tmp/asset.js) bytes, hooks OK" | tee -a verify.md
-
-          # 4) MediaStore string dex me hai (save path gallery me jaata hai)
-          if unzip -p "$APK" classes.dex | strings | grep -q "RELATIVE_PATH"; then
-            echo "- MediaStore RELATIVE_PATH: present in dex" | tee -a verify.md
+          # badging (best effort - tool path runner image par badal sakta hai)
+          AAPT="$ANDROID_HOME/build-tools/34.0.0/aapt"
+          if [ -x "$AAPT" ]; then
+            echo '```' >> verify.md
+            "$AAPT" dump badging "$APK" 2>/dev/null | grep -E "package:|launchable-activity:|sdkVersion|targetSdkVersion" >> verify.md || echo "aapt badging failed" >> verify.md
+            echo '```' >> verify.md
           else
-            echo "- MediaStore RELATIVE_PATH: NOT FOUND" | tee -a verify.md
+            echo "- aapt: NOT FOUND at $AAPT (skipped)" | tee -a verify.md
+          fi
+
+          # packaged recorder asset: valid JS + hooks
+          if unzip -p "$APK" assets/inject_webview.js > /tmp/asset.js 2>/dev/null; then
+            if command -v node >/dev/null && node --check /tmp/asset.js; then
+              echo "- assets/inject_webview.js: $(wc -c < /tmp/asset.js) bytes, JS valid" | tee -a verify.md
+            else
+              echo "- assets/inject_webview.js: JS INVALID" | tee -a verify.md
+              fail=1
+            fi
+            for hook in __lsStartDump appendBuffer __lsStatus; do
+              if grep -q "$hook" /tmp/asset.js; then
+                echo "- hook present: $hook" | tee -a verify.md
+              else
+                echo "- hook MISSING: $hook" | tee -a verify.md
+                fail=1
+              fi
+            done
+          else
+            echo "- assets/inject_webview.js: MISSING from APK" | tee -a verify.md
+            fail=1
+          fi
+
+          # MediaStore strings: dex ke andar classes.dex + strings tool optional
+          if unzip -p "$APK" > /tmp/all.bin 2>/dev/null && grep -aq "RELATIVE_PATH" /tmp/all.bin; then
+            echo "- MediaStore RELATIVE_PATH: present" | tee -a verify.md
+          else
+            echo "- MediaStore RELATIVE_PATH: NOT FOUND (check strings)" | tee -a verify.md
+            fail=1
+          fi
+
+          rm -f /tmp/all.bin
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::APK verification failed - see verify.md above"
             exit 1
           fi
-
-          echo | tee -a verify.md
-          echo "- release APK size: $(stat -c%s "$APK") bytes" | tee -a verify.md
-          echo "- sha256: $(sha256sum "$APK" | cut -d' ' -f1)" | tee -a verify.md
+          echo "APK verification: all checks passed"
 
       - name: Locate APKs
         id: apks
