@@ -49,6 +49,12 @@ ke roop me direct download link de deta hai (zip nahi).
 
 Key nikalne ka tareeka (India IP par): `run_local.py` chala kar terminal me
 dikhi key, ya browser devtools -> Network -> `enc.key` request -> 16 bytes.
+Key pehle se ho to:
+
+```bash
+python run_local.py --key <32-hex> "<lecture-url>"
+# ya workflow: -f video_key=<32-hex>  (HLS_KEY_HEX)
+```
 
 ## Sabse common blocker: "Your PW Session has expired"
 
@@ -59,12 +65,17 @@ session expire ho jata hai:
 - `/v1/pw/playback-manifest` -> **401 "Your PW Session has expired"**
 - HLS AES key endpoint bhi 403 deta hai
 
-**Fix:** StudyRatna app me apna PW account dobara login/link karo, phir
-lecture kholo aur naya `playerToken` link banao. Uske baad:
+**Fix:** lecture app me ek baar khol ke naya `playerToken` link banao. Uske baad:
 
 ```bash
+pip install requests pycryptodome
 python run_local.py      # India me - sab kuch automatic
 ```
+
+Ghanshyam: GitHub Actions (US runner) se sirf **2 request** block hoti hain —
+`player.studyratna.org` ka playlist (Cloudflare 502/403, IP fingerprint) aur
+`enc.key` (401 Unauthorised, kyunki key PW session ke peeche hai). Aapke
+device se dono khulti hain, isliye local run hi reliable hai.
 
 Script khud token decrypt karti hai, stale cookie par manifest API se fresh
 URL leti hai, segments download + AES decrypt karke `lecture.mp4` deti hai.
