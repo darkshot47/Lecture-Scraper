@@ -27,8 +27,9 @@ def log(msg):
 
 
 async def fetch(ctx, url, label=""):
-    r = await ctx.request.get(url, timeout=60000,
-                              headers={"Accept": "*/*"})
+    # NOTE: yahan headers pass nahi karte — warna context ke Referer/Origin
+    # override ho jate hain aur Cloudflare 502 de deta hai.
+    r = await ctx.request.get(url, timeout=60000)
     body = await r.body()
     log(f"    [{label}] HTTP {r.status} len={len(body)}")
     return r.status, body
@@ -253,10 +254,18 @@ async def main():
 
     # MP4 remux
     from shutil import which
-    if which("ffmpeg"):
+    ffmpeg_bin = which("ffmpeg")
+    if not ffmpeg_bin:
+        try:
+            import imageio_ffmpeg
+            ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+            log(f"[*] bundled ffmpeg: {ffmpeg_bin}")
+        except Exception:
+            ffmpeg_bin = None
+    if ffmpeg_bin:
         log("[*] ffmpeg MP4 remux...")
         try:
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", OUT_TS,
+            subprocess.run([ffmpeg_bin, "-y", "-loglevel", "error", "-i", OUT_TS,
                             "-c", "copy", "-bsf:a", "aac_adtstoasc", OUT_MP4],
                            check=True, timeout=1800)
             log(f"[+] {OUT_MP4} ready ({os.path.getsize(OUT_MP4)/1048576:.1f} MB)")
