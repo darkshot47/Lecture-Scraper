@@ -178,12 +178,43 @@ async def main():
         except Exception:
             pass
 
-        log("[*] master playlist...")
-        status, body = await fetch(ctx, playlist, "master")
+        cf_host = (data.get("cloudfront") or "").strip()
+        if not cf_host:
+            import re
+            m = re.search(r"([a-z0-9]{10,}\.cloudfront\.net)", str(data))
+            cf_host = m.group(1) if m else "d1d34p8vz63oiq.cloudfront.net"
+
+        # CF host par bhi cookies lagao (CloudFront signed cookie)
+        cfc = [dict(c, domain=cf_host) for c in cookies]
+        if cfc:
+            try:
+                await ctx.add_cookies(cfc)
+            except Exception:
+                pass
+
+        master_urls = [
+            playlist,
+            f"https://{cf_host}/stream/{uuid}/master.m3u8",
+            f"https://{cf_host}/{uuid}/master.m3u8",
+        ]
+        status, body = 0, b""
+        for attempt in range(10):
+            for mu in master_urls:
+                st, bd = await fetch(ctx, mu, "master", retries=1)
+                if st == 200 and b"#EXTM3U" in bd:
+                    playlist = mu
+                    status, body = st, bd
+                    break
+                if attempt % 3 == 0:
+                    log(f"    [{attempt}] {mu[-46:]} -> {st}")
+            if status == 200:
+                break
+            await asyncio.sleep(4)
         if status != 200:
-            log("[-] master playlist fail")
+            log("[-] master playlist fail (sab retries ke baad)")
             await browser.close()
             return 1
+        log(f"[+] master OK: {playlist}")
         master = body.decode("utf-8", "replace")
 
         variants = parse_master(master)
