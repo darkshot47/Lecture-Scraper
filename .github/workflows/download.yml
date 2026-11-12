@@ -66,9 +66,9 @@ jobs:
       run: |
         if [ "${{ inputs.with_browser }}" = "true" ]; then
           python probe_browser_key.py 2>&1 | tee run.log || true
-        else
-          python probe_key.py 2>&1 | tee run.log || true
         fi
+        python probe_key.py 2>&1 | tee -a run.log || true
+        python hunt_proxy_key.py 2>&1 | tee -a run.log || true
         cp run.log inspect_report.md
 
     - name: Run Site Inspector (mode=inspect)
