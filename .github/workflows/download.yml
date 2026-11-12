@@ -54,7 +54,10 @@ jobs:
         ) || echo "WARN: ffmpeg missing (HLS merge fail ho sakta hai)"
         if [ "${{ inputs.with_browser }}" = "true" ]; then
           pip install playwright
-          timeout 420 playwright install --with-deps chromium || echo "WARN: browser install fail"
+          timeout 600 playwright install --with-deps chromium || echo "WARN: browser install fail"
+          python -c "from playwright.sync_api import sync_playwright;\
+import contextlib;\
+p=sync_playwright().start(); b=p.chromium.launch(headless=True); print('browser OK'); b.close(); p.stop()" || echo "WARN: browser launch fail"
         fi
 
     - name: Run Key Hunter
@@ -63,7 +66,11 @@ jobs:
         TARGET_URL: ${{ inputs.target_url }}
         VIDEO_KEY: ${{ inputs.video_key }}
       run: |
-        python probe_key.py 2>&1 | tee run.log || true
+        if [ "${{ inputs.with_browser }}" = "true" ]; then
+          python probe_browser_key.py 2>&1 | tee run.log || true
+        else
+          python probe_key.py 2>&1 | tee run.log || true
+        fi
         cp run.log inspect_report.md
 
     - name: Run Site Inspector
