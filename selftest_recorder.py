@@ -110,9 +110,28 @@ def main() -> int:
     url = f"http://127.0.0.1:{port}/index.html"
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=[
-            "--no-sandbox", "--autoplay-policy=no-user-gesture-required"])
+        last = None
+        for channel in ("chrome", "chrome-beta", None):
+            try:
+                kw = {"headless": True, "args": [
+                    "--no-sandbox", "--autoplay-policy=no-user-gesture-required",
+                    "--disable-dev-shm-usage"]}
+                if channel:
+                    kw["channel"] = channel
+                browser = p.chromium.launch(**kw)
+                print(f"[+] browser: {channel or 'bundled chromium'}")
+                break
+            except Exception as exc:
+                last = exc
+        else:
+            sys.exit(f"koi browser launch nahi hua: {last}")
         page = browser.new_page()
+        codecs = page.evaluate(
+            "() => ['video/mp4; codecs=\"avc1.42c01e\"', "
+            "'video/mp4; codecs=\"avc1.64001e\"'].map("
+            "m => [m, !!(window.MediaSource && MediaSource.isTypeSupported(m))])"
+        )
+        print(f"[i] codecs: {codecs}")
         page.add_init_script(script=dl.RECORDER_JS)
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
@@ -149,6 +168,20 @@ def main() -> int:
             print(f"[+] remuxed: {out} ({out.stat().st_size} bytes, {dur:.2f}s)")
             if dur < 3:
                 failures.append(f"duration bahut kam ({dur:.2f}s)")
+
+    report = {
+        "browser": "see log",
+        "codecs": codecs if "codecs" in dir() else None,
+        "page_error": err,
+        "js_errors": errors[:3],
+        "status": status,
+        "captured_bytes": dumped.get("mseBytes"),
+        "mime": dumped.get("mseMime"),
+        "failures": failures,
+    }
+    Path("selftest_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print("\n=== SELFTEST JSON ===")
+    print(json.dumps(report, indent=2))
 
     if failures:
         print("\nSELFTEST FAIL")

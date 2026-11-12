@@ -553,15 +553,48 @@ def remux_to_mp4(src: Path) -> Path | None:
     return out
 
 
+LAUNCH_ARGS = ["--autoplay-policy=no-user-gesture-required", "--no-sandbox",
+               "--use-fake-ui-for-media-stream", "--disable-dev-shm-usage"]
+
+
+async def launch_browser(p):
+    """Pehle real Chrome (H.264/AAC codecs ke saath), phir bundled Chromium.
+
+    Bundled Chromium me proprietary codecs (H.264/AAC) nahi hote, isliye
+    avc1 wali HLS stream wahan MSE me append hi nahi hoti - aur capture khali
+    reh jaata hai. Isliye channel priority zaroori hai.
+    """
+    last_exc = None
+    for channel in ("chrome", "chrome-beta", None):
+        try:
+            kwargs = {"headless": True, "args": LAUNCH_ARGS}
+            if channel:
+                kwargs["channel"] = channel
+            browser = await p.chromium.launch(**kwargs)
+            note(f"browser launch OK: {channel or 'bundled chromium'}")
+            return browser
+        except Exception as exc:
+            last_exc = exc
+            log(f"[!] launch {channel or 'bundled chromium'} fail: {type(exc).__name__}")
+    raise RuntimeError(f"koi browser launch nahi hua: {last_exc}")
+
+
+CODEC_JS = r"""(list) => list.map(m => [m, !!(window.MediaSource && MediaSource.isTypeSupported(m))])"""
+
+CODECS = [
+    'video/mp4; codecs="avc1.42c01e"',
+    'video/mp4; codecs="avc1.64001e"',
+    'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+    'video/webm; codecs="vp9"',
+    'video/webm; codecs="vp8"',
+]
+
+
 async def browser_capture(record: bool) -> tuple[Capture, dict]:
     capture = Capture()
     result: dict = {"cookies": [], "recorded_bytes": 0, "record_meta": {}}
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--autoplay-policy=no-user-gesture-required", "--no-sandbox",
-                  "--use-fake-ui-for-media-stream"],
-        )
+        browser = await launch_browser(p)
         context = await browser.new_context(
             user_agent=USER_AGENT,
             viewport={"width": 1280, "height": 800},
@@ -571,6 +604,18 @@ async def browser_capture(record: bool) -> tuple[Capture, dict]:
         page = await context.new_page()
         page.on("request", capture.on_request)
         page.on("response", capture.on_response)
+        try:
+            codecs = await page.evaluate(CODEC_JS, CODECS)
+            result["codecs"] = codecs
+            h264 = any(ok for m, ok in codecs if "avc1" in m)
+            note("codec support: " + ", ".join(
+                f"{m.split('codecs=')[-1][:22]}={'yes' if ok else 'NO'}" for m, ok in codecs))
+            if not h264:
+                note("!! is browser me H.264 (avc1) nahi hai - lecture ka HLS "
+                     "(H.264/TS) MSE me append nahi hoga, capture khali rahega. "
+                     "Isliye Chrome channel install karna zaroori hai.")
+        except Exception:
+            pass
         if record:
             try:
                 await page.add_init_script(script=RECORDER_JS)

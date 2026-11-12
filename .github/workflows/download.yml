@@ -80,14 +80,35 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Chromium for Playwright
-        timeout-minutes: 15
-        run: python -m playwright install --with-deps chromium
+      # Real Chrome zaroori hai: Playwright ke bundled Chromium me H.264/AAC
+      # (proprietary) codecs nahi hote, aur is site ka HLS H.264/TS hai.
+      - name: Install Chrome + Chromium for Playwright
+        timeout-minutes: 20
+        run: |
+          python -m playwright install --with-deps chromium chrome || \
+            python -m playwright install --with-deps chromium
 
       # Recorder self-test: asli player ke bina bhi MSE capture + remux verify.
       # Yeh fail ho to neeche ka download bekaar hai, isliye pehle chalaate hain.
       - name: Self-test in-page recorder
+        id: selftest
+        continue-on-error: true
         run: python selftest_recorder.py
+
+      - name: Self-test summary
+        if: always()
+        run: |
+          {
+            echo "## Recorder self-test: ${{ steps.selftest.outcome }}"
+            echo '```json'
+            cat selftest_report.json 2>/dev/null || echo '{"note":"no selftest_report.json"}'
+            echo '```'
+          } | tee selftest_summary.md
+
+      - name: Guard on self-test
+        if: steps.selftest.outcome != 'success'
+        run: |
+          echo "::warning::Recorder self-test fail - capture path is doubt, downloadable path still tried."
 
       - name: Mask input URL
         run: echo "::add-mask::$TARGET_URL"
@@ -128,6 +149,8 @@ jobs:
           path: |
             debug/
             run_report.md
+            selftest_report.json
+            selftest_summary.md
           if-no-files-found: ignore
           retention-days: 7
 
@@ -154,6 +177,8 @@ jobs:
           {
             echo "Workflow result: **$OUTCOME**"
             echo "Run: $RUN_URL"
+            echo
+            cat selftest_summary.md 2>/dev/null || true
             echo
             cat run_report.md 2>/dev/null || echo "no run_report.md"
           } > /tmp/notes.md
