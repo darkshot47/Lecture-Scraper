@@ -44,18 +44,27 @@ def load_proxies():
             seen.add(p)
             out.append(p)
     print(f"[*] total unique proxies: {len(out)}", flush=True)
-    return out[:400]
+    return out
+
+
+STATS = {}
 
 
 def try_proxy(proxy, key_url):
     px = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
     try:
-        r = requests.get(key_url, proxies=px, timeout=8,
+        r = requests.get(key_url, proxies=px, timeout=7,
                          headers={"User-Agent": UA}, verify=False)
-    except Exception:
+    except Exception as e:
+        tag = type(e).__name__
+        STATS[tag] = STATS.get(tag, 0) + 1
         return None
+    STATS[r.status_code] = STATS.get(r.status_code, 0) + 1
     if r.status_code == 200 and len(r.content) in (16, 32):
         return (proxy, r.content)
+    if r.status_code == 200 and len(r.content) < 200:
+        print(f"[?] {proxy} 200 len={len(r.content)} body={r.content[:80]!r}",
+              flush=True)
     return None
 
 
@@ -75,12 +84,13 @@ def main():
 
     proxies = load_proxies()
     hits = []
-    with ThreadPoolExecutor(max_workers=40) as pool:
+    with ThreadPoolExecutor(max_workers=120) as pool:
         for res in pool.map(lambda p: try_proxy(p, key_url), proxies):
             if res:
                 proxy, key = res
                 print(f"[+] HIT via {proxy}: {key.hex()}", flush=True)
                 hits.append((proxy, key))
+    print(f"[*] stats: {STATS}", flush=True)
 
     if hits:
         with open("hls_key.txt", "w") as f:
