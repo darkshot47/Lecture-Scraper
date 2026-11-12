@@ -217,6 +217,9 @@
 
   window.__lsClearMse = function () { S.mse = []; S.mseBytes = 0; };
 
+  /* App se manual poke (agar 20s tak capture shuru na ho) */
+  window.__lsPoke = function () { poke(); return 1; };
+
   window.__lsRecStop = function () {
     try { if (S.rec && S.rec.state !== "inactive") S.rec.stop(); } catch (e) {}
   };
