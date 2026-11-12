@@ -22,6 +22,7 @@ on:
           - download
           - detect
           - manifest
+          - stream
           - inspect
       with_browser:
         description: 'Browser install karo (real Chromium se key fetch / generic sites)'
@@ -70,6 +71,14 @@ jobs:
         fi
         python probe_key.py 2>&1 | tee -a run.log || true
         python hunt_proxy_key.py 2>&1 | tee -a run.log || true
+        cp run.log inspect_report.md
+
+    - name: Browser Stream Probe (mode=stream)
+      if: inputs.mode == 'stream'
+      env:
+        TARGET_URL: ${{ inputs.target_url }}
+      run: |
+        python browser_stream_probe.py 2>&1 | tee run.log || true
         cp run.log inspect_report.md
 
     - name: Probe Manifest API (mode=manifest)
