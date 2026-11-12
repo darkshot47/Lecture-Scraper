@@ -241,8 +241,7 @@ def pick_working_url(video_url: str, cookie: str | None, headers: dict) -> str |
 def probe_stream(url: str, headers: dict) -> bool:
     """Stream URL ko seedha fetch karke dekho — 403/404 turant pata chal jayega."""
     import urllib.error
-    import urllib.error
-import urllib.request
+    import urllib.request
 
     print(f"[*] PROBE: {url[:120]}", flush=True)
     try:
@@ -374,6 +373,7 @@ def fetch_manifest_video_url(data: dict):
         print("[*] Manifest API ke liye ids/initData adhoora — skip.", flush=True)
         return None
 
+    import urllib.error
     import urllib.request
 
     url = f"{MANIFEST_API}/{batch}/{subject}/{schedule}"
