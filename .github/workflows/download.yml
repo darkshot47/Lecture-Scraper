@@ -81,6 +81,7 @@ jobs:
         if [ "${{ inputs.with_browser }}" = "true" ]; then
           python browser_stream_probe.py 2>&1 | tee -a run.log || true
         fi
+        python app_session_probe.py 2>&1 | tee -a run.log || true
         python key_proxy_probe.py 2>&1 | tee -a run.log || true
         cp run.log inspect_report.md
 
