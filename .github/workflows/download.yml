@@ -25,9 +25,9 @@ on:
         default: "60"
         type: string
       record_seconds:
-        description: "In-page playback recording kitni der (default 300s)"
+        description: "In-page playback recording kitni der (default 1200s)"
         required: false
-        default: "300"
+        default: "1200"
         type: string
       record_mode:
         description: "1 = playback capture on (agar download block ho to)"
@@ -39,6 +39,8 @@ on:
   push:
     paths:
       - ".github/workflows/download.yml"
+      - "downloader.py"
+      - "selftest_recorder.py"
 
 permissions:
   contents: write
@@ -117,7 +119,7 @@ jobs:
         id: dl
         continue-on-error: true
         env:
-          RECORD_SECONDS: ${{ inputs.record_seconds || '300' }}
+          RECORD_SECONDS: ${{ inputs.record_seconds || '1200' }}
           RECORD_MODE: ${{ inputs.record_mode || '1' }}
         run: python downloader.py
 

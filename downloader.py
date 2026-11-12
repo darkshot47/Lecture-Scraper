@@ -44,7 +44,7 @@ from playwright.async_api import async_playwright
 
 TARGET_URL = os.environ.get("TARGET_URL", "").strip()
 WAIT_SECONDS = max(5, int(os.environ.get("WAIT_SECONDS", "60")))
-RECORD_SECONDS = max(15, int(os.environ.get("RECORD_SECONDS", "300")))
+RECORD_SECONDS = max(15, int(os.environ.get("RECORD_SECONDS", "1200")))
 ATTEMPTS = max(1, int(os.environ.get("ATTEMPTS", "2")))
 RECORD_MODE = os.environ.get("RECORD_MODE", "1") not in ("0", "false", "no", "")
 OUTPUT_BASE = "downloaded_lecture"
@@ -646,6 +646,8 @@ async def browser_capture(record: bool) -> tuple[Capture, dict]:
                 # Recorder ko playback dekhne do; jitna buffer banega utna capture.
                 rec_deadline = time.monotonic() + RECORD_SECONDS
                 last_print = 0.0
+                last_bytes = 0
+                last_growth = time.monotonic()
                 while time.monotonic() < rec_deadline:
                     try:
                         status = await page.evaluate(STATUS_JS)
@@ -661,8 +663,23 @@ async def browser_capture(record: bool) -> tuple[Capture, dict]:
                             f"t={status.get('current'):.1f}/{status.get('duration'):.1f} "
                             f"buf={status.get('bufferedEnd'):.1f} "
                             f"err={status.get('error')}")
+                    grown = ((status.get("mseBytes") or 0)
+                             + (status.get("recBytes") or 0))
+                    if grown > last_bytes:
+                        last_bytes = grown
+                        last_growth = time.monotonic()
+                    dur = status.get("duration") or 0
+                    buf = status.get("bufferedEnd") or 0
                     if status.get("ended"):
                         note("playback end tak pahunch gaya (capture complete).")
+                        break
+                    if dur and float("inf") > dur > 0 and buf >= dur - 1.0:
+                        note(f"poora lecture buffer ho gaya ({buf:.1f}s) - capture rok rahe hain.")
+                        await asyncio.sleep(3)
+                        break
+                    if grown > 0 and time.monotonic() - last_growth > 90:
+                        note("90s tak naya media data nahi aaya (stream stall) - "
+                             "jo capture hua wahi use kar rahe hain.")
                         break
                     if (status.get("mseBytes") or 0) + (status.get("recBytes") or 0) == 0 \
                             and time.monotonic() - last_nudge > 15 and not capture.best():
