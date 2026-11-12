@@ -21,6 +21,7 @@ on:
         options:
           - download
           - detect
+          - manifest
           - inspect
       with_browser:
         description: 'Browser install karo (real Chromium se key fetch / generic sites)'
@@ -71,6 +72,14 @@ jobs:
         python hunt_proxy_key.py 2>&1 | tee -a run.log || true
         cp run.log inspect_report.md
 
+    - name: Probe Manifest API (mode=manifest)
+      if: inputs.mode == 'manifest'
+      env:
+        TARGET_URL: ${{ inputs.target_url }}
+      run: |
+        python manifest_probe.py 2>&1 | tee run.log || true
+        cp run.log inspect_report.md
+
     - name: Run Site Inspector (mode=inspect)
       if: inputs.mode == 'inspect'
       run: python inspect_site.py || true
@@ -111,6 +120,7 @@ jobs:
           run.log
           lecture_info.txt
           hls_key.txt
+          fresh_video_url.txt
         if-no-files-found: ignore
 
     # MP4 ko GitHub Release asset banao -> seedha download link (zip nahi)
