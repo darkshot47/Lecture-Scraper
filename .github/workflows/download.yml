@@ -4,8 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       target_url:
-        description: 'StudyRatna / Lecture URL'
-        required: true
+        description: 'StudyRatna / Lecture URL (playerToken wala)'
+        required: false
+        default: ''
         type: string
       mode:
         description: 'download = lecture download karo, inspect = site ka JS/API analysis'
