@@ -128,11 +128,17 @@ def download_hls(url: str, headers: dict, out_path: str = "downloaded_lecture.ts
     if encrypted and key_uri:
         print(f"[+] Encrypted stream (AES-128), key fetch: {key_uri[:160]}", flush=True)
         try:
-            key = fetch_key_with_variants(session, key_uri, headers)
+            key = fetch_key_with_variants(session, key_uri, headers,
+                                          playlist_url=media_url,
+                                          probe_segment=probe,
+                                          iv_hex=key_iv)
         except Exception as e:
             print(f"[-] {e}", flush=True)
-            print("[*] Key ke bina hi download try kar raha hoon...", flush=True)
-            key = None
+            raise RuntimeError(
+                "AES key nahi mili — encrypted segments ko decrypt nahi kar sakte. "
+                "Bina key ke file banane ka koi matlab nahi (player 'can't play' "
+                "dikhayega)."
+            )
 
     parts = [None] * len(segments)
     done = {"n": 0}
@@ -189,33 +195,85 @@ def download_hls(url: str, headers: dict, out_path: str = "downloaded_lecture.ts
     return out_path
 
 
-def fetch_key_with_variants(session, key_url: str, base_headers: dict):
-    """Key endpoint (api.penpencil.co) 403 deta hai — header combos try karo."""
+def key_url_candidates(key_url: str, playlist_url: str):
+    """HLS key ke saare possible locations (CloudFront signed domain included)."""
     from urllib.parse import urlparse
 
-    host = urlparse(key_url).netloc
-    variants = [
-        ("as-is (app headers)", dict(base_headers)),
+    cands = [key_url]
+    import re as _re
+    m = _re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                   playlist_url)
+    uuid = m.group(0) if m else ""
+    for host in ("d1d34p8vz63oiq.cloudfront.net",):
+        if uuid:
+            for path in (f"/{uuid}/enc.key", f"/{uuid}/hls/720/enc.key",
+                         f"/{uuid}/key", f"/{uuid}/hls/enc.key"):
+                cands.append(f"https://{host}{path}")
+    if uuid:
+        cands.append(f"https://player.studyratna.org/stream/{uuid}/enc.key")
+        cands.append(f"https://player.studyratna.org/stream/{uuid}/hls/720/enc.key")
+    # duplicate hatao, order banao
+    out, seen = [], set()
+    for c in cands:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def _looks_like_ts(seg_bytes: bytes, key: bytes, iv: bytes) -> bool:
+    """Key sahi hai ya nahi — decrypt karke 0x47 (TS sync) check karo."""
+    try:
+        from Crypto.Cipher import AES
+        head = seg_bytes[:188]
+        head += b"\x00" * (-len(head) % 16)
+        pt = AES.new(key, AES.MODE_CBC, iv).decrypt(head)
+        return pt[:1] == b"\x47"
+    except Exception:
+        return False
+
+
+def fetch_key_with_variants(session, key_url: str, base_headers: dict,
+                            playlist_url: str = "", probe_segment: bytes = b"",
+                            iv_hex: str | None = None):
+    """
+    Key endpoint (api.penpencil.co) geo-restricted CloudFront 403 deta hai.
+    Isliye: har candidate URL x har header combo try karo, aur jo 16-byte key
+    mila usse segment 0 decrypt karke validate karo (0x47 sync byte).
+    """
+    from urllib.parse import urlparse
+
+    iv = bytes.fromhex((iv_hex or "").replace("0x", "")) if iv_hex else bytes(16)
+    header_variants = [
+        ("app headers", dict(base_headers)),
         ("penpencil referer", {**base_headers, "Referer": "https://www.penpencil.co/",
                                "Origin": "https://www.penpencil.co"}),
         ("no cookie", {k: v for k, v in base_headers.items() if k.lower() != "cookie"}),
         ("ua only", {"User-Agent": base_headers.get("User-Agent", "Mozilla/5.0")}),
-        ("app referer no origin", {"User-Agent": base_headers.get("User-Agent", "Mozilla/5.0"),
-                                   "Referer": "https://app.studyratna.org/"}),
-        ("penpencil origin + app referer", {**base_headers,
-                                            "Origin": "https://www.penpencil.co"}),
     ]
-    for label, hdrs in variants:
-        try:
-            r = session.get(key_url, headers=hdrs, timeout=30)
-            print(f"[*] key try [{label}] -> HTTP {r.status_code} ({len(r.content)} bytes) "
-                  f"host={host}", flush=True)
+
+    for url in key_url_candidates(key_url, playlist_url):
+        host = urlparse(url).netloc
+        for label, hdrs in header_variants:
+            try:
+                r = session.get(url, headers=hdrs, timeout=25)
+            except Exception as e:
+                print(f"[*] key [{host} | {label}] error {str(e)[:70]}", flush=True)
+                continue
             if r.status_code == 200 and len(r.content) in (16, 32):
-                print(f"[+] KEY mil gaya ({label})", flush=True)
-                return r.content
-        except Exception as e:
-            print(f"[*] key try [{label}] -> error {str(e)[:80]}", flush=True)
-    raise RuntimeError("HLS decryption key nahi mila (saare header combos 403)")
+                key = r.content
+                ok = _looks_like_ts(probe_segment, key, iv) if probe_segment else True
+                print(f"[{'✅' if ok else '?'}] key [{host} | {label}] "
+                      f"HTTP 200 len={len(key)} valid={ok}", flush=True)
+                if ok:
+                    return key
+            else:
+                print(f"[*] key [{host} | {label}] HTTP {r.status_code} "
+                      f"len={len(r.content)}", flush=True)
+    raise RuntimeError(
+        "HLS decryption key nahi mili. CloudFront key endpoint (api.penpencil.co) "
+        "non-India IP par 403 (geo-block) deta hai."
+    )
 
 
 def _has_ffmpeg() -> bool:

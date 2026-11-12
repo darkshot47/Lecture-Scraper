@@ -16,6 +16,10 @@ on:
           - download
           - inspect
           - diag
+      video_key:
+        description: 'Optional: video UUID (jab token expire ho gaya ho)'
+        required: false
+        type: string
       with_browser:
         description: 'Browser fallback bhi install karo (slow, sirf normal sites ke liye)'
         required: false
@@ -52,12 +56,13 @@ jobs:
           timeout 420 playwright install --with-deps chromium || echo "WARN: browser install fail"
         fi
 
-    - name: Run Key Diagnostic
+    - name: Run Key Hunter
       if: inputs.mode == 'diag'
       env:
         TARGET_URL: ${{ inputs.target_url }}
+        VIDEO_KEY: ${{ inputs.video_key }}
       run: |
-        python diag_key.py 2>&1 | tee run.log || true
+        python probe_key.py 2>&1 | tee run.log || true
         cp run.log inspect_report.md
 
     - name: Run Site Inspector
@@ -95,6 +100,7 @@ jobs:
           inspect_report.md
           run.log
           lecture_info.txt
+          hls_key.txt
         if-no-files-found: ignore
 
     # Debug summary GitHub Release notes me daal do — ise API se padha ja sakta hai
