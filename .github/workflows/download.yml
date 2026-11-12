@@ -54,7 +54,7 @@ jobs:
         ffmpeg -version 2>/dev/null | head -1 || (
           sudo apt-get update -qq && timeout 240 sudo apt-get install -y -qq ffmpeg
         ) || echo "WARN: ffmpeg missing"
-        if [ "${{ inputs.with_browser }}" = "true" ]; then
+        if [ "${{ inputs.with_browser }}" = "true" ] || [ "${{ inputs.mode }}" = "download" ]; then
           pip install playwright
           timeout 600 playwright install --with-deps chromium || echo "WARN: browser install fail"
           python check_browser.py || echo "WARN: browser launch fail"
@@ -101,7 +101,15 @@ jobs:
         WAIT_SECONDS: '25'
       run: |
         set -o pipefail
-        python downloader.py 2>&1 | tee run.log
+        if [ -n "$TARGET_URL" ]; then
+          # StudyRatna token URL: Playwright context se playlist+key+segments
+          pip install playwright >/dev/null 2>&1 || true
+          python pw_download.py 2>&1 | tee run.log || true
+        fi
+        if ! ls downloaded_lecture.* >/dev/null 2>&1; then
+          echo "--- fallback: downloader.py ---" | tee -a run.log
+          python downloader.py 2>&1 | tee -a run.log || true
+        fi
 
     - name: Upload Video Artifact
       id: artifact
