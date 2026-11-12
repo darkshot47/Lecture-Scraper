@@ -54,10 +54,16 @@ async def attempt(browser, target, n):
                                     viewport={"width": 1366, "height": 768})
     await ctx.add_init_script(STEALTH_JS)
 
+    ts_count = {"n": 0}
+
     async def guard(route):
         u = route.request.url
         if "disable-devtool" in u:
             return await route.abort()
+        if ".ts" in u:
+            ts_count["n"] += 1
+            if ts_count["n"] > 6:
+                return await route.abort()
         if (route.request.resource_type == "document"
                 and urlparse(u).netloc in ("studyratna.org", "www.studyratna.org")):
             return await route.fulfill(status=200, content_type="text/html",
@@ -84,6 +90,8 @@ async def attempt(browser, target, n):
         tag = u.split("?")[0][-45:]
         if ".m3u8" in u:
             print(f"    [{resp.status}] PLAYLIST {len(body)}B {tag}", flush=True)
+            if resp.status != 200:
+                print(f"      body: {body[:200]!r}", flush=True)
             if body[:7] == b"#EXTM3U":
                 txt = body.decode("utf-8", "replace")
                 for ln in txt.splitlines():
@@ -110,7 +118,7 @@ async def attempt(browser, target, n):
     except Exception as e:
         print(f"    goto: {str(e)[:100]}", flush=True)
 
-    for i in range(24):
+    for i in range(16):
         await page.wait_for_timeout(3000)
         try:
             info = await page.evaluate(VIDEO_JS)
@@ -147,14 +155,17 @@ async def main():
             "--disable-blink-features=AutomationControlled",
             "--autoplay-policy=no-user-gesture-required"])
         ok = False
-        for n in range(4):
-            print(f"[*] attempt {n+1}/4", flush=True)
+        for n in range(5):
+            print(f"[*] attempt {n+1}/5", flush=True)
             try:
                 if await attempt(browser, target, n):
                     ok = True
                     break
             except Exception as e:
                 print(f"    attempt error: {str(e)[:120]}", flush=True)
+            if n < 4:
+                print("    30s cooldown...", flush=True)
+                await asyncio.sleep(30)
         await browser.close()
     print("[=] KEY MILI" if ok else "[=] key nahi mili", flush=True)
     return 0 if ok else 1

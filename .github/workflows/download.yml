@@ -23,6 +23,7 @@ on:
           - detect
           - manifest
           - stream
+          - key
           - inspect
       with_browser:
         description: 'Browser install karo (real Chromium se key fetch / generic sites)'
@@ -71,6 +72,18 @@ jobs:
         fi
         python probe_key.py 2>&1 | tee -a run.log || true
         python hunt_proxy_key.py 2>&1 | tee -a run.log || true
+        cp run.log inspect_report.md
+
+    - name: Key Hunt (mode=key)
+      if: inputs.mode == 'key'
+      env:
+        TARGET_URL: ${{ inputs.target_url }}
+      run: |
+        python keygrab.py 2>&1 | tee run.log || true
+        if [ -s hls_key.txt ]; then
+          echo "--- key mili, download ---" | tee -a run.log
+          python pw_download.py 2>&1 | tee -a run.log || true
+        fi
         cp run.log inspect_report.md
 
     - name: Browser Stream Probe (mode=stream)
