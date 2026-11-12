@@ -26,13 +26,24 @@ def log(msg):
     print(msg, flush=True)
 
 
-async def fetch(ctx, url, label=""):
-    # NOTE: yahan headers pass nahi karte — warna context ke Referer/Origin
-    # override ho jate hain aur Cloudflare 502 de deta hai.
-    r = await ctx.request.get(url, timeout=60000)
-    body = await r.body()
-    log(f"    [{label}] HTTP {r.status} len={len(body)}")
-    return r.status, body
+async def fetch(ctx, url, label="", retries=5):
+    """Cloudflare 403/502 flaky hai — retries ke saath fetch."""
+    last = (0, b"")
+    for attempt in range(retries):
+        try:
+            # headers pass nahi karte: context ke Referer/Origin override na hon
+            r = await ctx.request.get(url, timeout=60000)
+            body = await r.body()
+            sc = r.headers.get("set-cookie", "")
+            log(f"    [{label}] HTTP {r.status} len={len(body)}"
+                + (f" set-cookie={sc[:80]}" if sc else ""))
+            last = (r.status, body)
+            if r.status == 200:
+                return r.status, body
+        except Exception as e:
+            log(f"    [{label}] error {str(e)[:90]}")
+        await asyncio.sleep(1.5 * (attempt + 1))
+    return last
 
 
 def parse_master(text):
@@ -135,6 +146,12 @@ async def main():
         try:
             await page.goto("https://app.studyratna.org/", timeout=60000,
                             wait_until="domcontentloaded")
+        except Exception:
+            pass
+
+        try:
+            ck = await ctx.cookies()
+            log(f"[*] context cookies: {[(c['domain'], c['name']) for c in ck]}")
         except Exception:
             pass
 
