@@ -16,3 +16,6 @@ __pycache__/
 # jsdom test ke liye local symlink/deps
 tools/node_modules
 node_modules/
+
+# local test venvs
+.venv*/

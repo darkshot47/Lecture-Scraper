@@ -1,0 +1,59 @@
+name: Proxy Selftest
+
+# Bina token: sirf Indian proxy pool ka health check.
+# Workflow_dispatch ya push par chalta hai; report draft release me jaati hai.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "proxies.py"
+      - "proxy_selftest.py"
+      - ".github/workflows/proxy-selftest.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Fix DNS
+        run: |
+          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+          echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
+      - name: Install deps
+        run: pip install requests
+      - name: Run proxy selftest
+        id: st
+        continue-on-error: true
+        run: python proxy_selftest.py 2>&1 | tee proxy_selftest.log
+      - name: Summary + release
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.st.outcome }}
+        run: |
+          TAG="proxy-selftest-${GITHUB_RUN_ID}"
+          {
+            echo "Proxy selftest: **$OUTCOME**"
+            echo
+            echo '```'
+            tail -60 proxy_selftest.log
+            echo '```'
+          } > /tmp/notes.md
+          gh release create "$TAG" --draft --title "Proxy selftest ($OUTCOME)" --notes-file /tmp/notes.md || true
+          gh release upload "$TAG" proxy_selftest.log --clobber || true
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-selftest
+          path: proxy_selftest.log
+          if-no-files-found: ignore

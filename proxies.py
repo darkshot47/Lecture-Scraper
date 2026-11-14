@@ -60,7 +60,8 @@ SOURCES_GLOBAL = [
 
 GEO_ENDPOINTS = [
     "http://ip-api.com/json/?fields=countryCode,query,isp",
-    "https://ipinfo.io/country",
+    "https://ipwho.is/",
+    "https://ipinfo.io/json",
 ]
 
 HOSTS_TO_TEST = [
@@ -171,10 +172,15 @@ def geo_check(proxy: str, timeout: float = TIMEOUT) -> dict | None:
                              headers={"User-Agent": UA})
             if r.status_code != 200:
                 continue
-            text = r.text.strip()
-            if url.endswith("country"):
-                code = text[:2].upper()
-                info = {"country": code, "ip": None, "isp": None}
+            if "ipwho.is" in url:
+                info = r.json()
+                code = str(info.get("country_code", "")).upper()
+                info = {"country": code, "ip": info.get("ip"),
+                        "isp": (info.get("connection") or {}).get("isp")}
+            elif "ipinfo.io" in url:
+                info = r.json()
+                code = str(info.get("country", "")).upper()
+                info = {"country": code, "ip": info.get("ip"), "isp": info.get("org")}
             else:
                 info = r.json()
                 code = str(info.get("countryCode", "")).upper()
@@ -182,7 +188,8 @@ def geo_check(proxy: str, timeout: float = TIMEOUT) -> dict | None:
                 info["country"] = "IN"
                 info["proxy"] = proxy
                 return info
-            return None
+            # IN nahi mila: agla endpoint try karo (ip-api kabhi rate-limit/false
+            # negative deta hai, isliye fallback zaroori hai)
         except Exception:
             continue
     return None
@@ -267,20 +274,39 @@ def load_cache(max_age: int = 1800) -> list[dict]:
     return []
 
 
-def ensure_pool(min_count: int = 3, log=print) -> list[dict]:
-    """Cache se pool do; kaafi na ho to naya scan karo."""
+def ensure_pool(min_count: int = 3, rounds: int = 3, log=print) -> list[dict]:
+    """Cache se pool do; kaafi na ho to multi-round scan (har round naya sample).
+
+    Free pool me IN proxies ~5-10% hi hote hain, isliye ek round me 3-5 milte hain.
+    Kai round karne se 10-20 tak pahunch jaate hain - zyada chances stream ke liye.
+    """
     cached = load_cache()
     usable = [c for c in cached if c.get("host_ok")]
     if len(usable) >= min_count:
         log(f"[proxy] cache se {len(usable)} working IN proxies")
         return usable
-    log("[proxy] cache khaali/stale - naya scan")
-    found = discover(country_only=True, log=log)
-    if len(found) < 20:
-        log("[proxy] country lists chhoti lagi, global lists ka sample bhi le rahe hain")
-        extra = discover(country_only=False, log=log)
-        random.shuffle(extra)
-        found += extra[:1500]
-    good = validate(found, log=log)
+
+    good: list[dict] = []
+    seen: set[str] = set()
+    for r in range(1, rounds + 1):
+        log(f"[proxy] === round {r}/{rounds} ===")
+        found = discover(country_only=(r == 1), log=log)
+        found = [p for p in found if p not in seen]
+        if r > 1:
+            random.shuffle(found)
+            # global list bahut badi hai; har round ek naya sample
+            found = found[:1500]
+        seen.update(found)
+        if not found:
+            continue
+        batch = validate(found, log=log)
+        for b in batch:
+            if all(b["proxy"] != g["proxy"] for g in good):
+                good.append(b)
+        log(f"[proxy] round {r}: +{len(batch)} -> total {len(good)} "
+            f"({sum(1 for g in good if g.get('host_ok'))} reachable)")
+        if len([g for g in good if g.get("host_ok")]) >= min_count + 4:
+            break
+    good.sort(key=lambda g: (not g.get("host_ok"),))
     save_cache(good)
     return good
