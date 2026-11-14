@@ -1,0 +1,174 @@
+name: India Download
+
+# Token URL -> India-based proxy -> HLS download -> MP4.
+# Runner US ka hai, isliye stream requests Indian proxy pool se jaati hain
+# (proxy discovery + geo-verify workflow ke andar hota hai).
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "Fresh lecture URL with playerToken"
+        required: true
+        type: string
+      no_proxy:
+        description: "1 = sirf direct try (debug)"
+        required: false
+        default: "0"
+        type: string
+      min_mb:
+        description: "Kam se kam kitne MB ka video chahiye (partial reject)"
+        required: false
+        default: "0.5"
+        type: string
+      workers:
+        description: "Parallel segment downloads"
+        required: false
+        default: "4"
+        type: string
+  repository_dispatch:
+    types: [india-download]
+  push:
+    paths:
+      - ".github/workflows/india-download.yml"
+      - "india_download.py"
+      - "hls_engine.py"
+      - "proxies.py"
+      - "resume_capture.py"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: india-download-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TARGET_URL: ${{ inputs.target_url || github.event.client_payload.url }}
+  HLS_WORKERS: ${{ inputs.workers || '4' }}
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Fix DNS
+        run: |
+          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+          echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pycryptodome
+
+      - name: Install ffmpeg (remux ke liye, optional)
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update -o Acquire::Retries=3 || true
+          sudo apt-get install -y --no-install-recommends ffmpeg || echo "ffmpeg skip"
+          (ffmpeg -version 2>/dev/null | head -1) || echo "ffmpeg not available"
+
+      - name: Unit tests (playlist parser, AES IV)
+        run: |
+          python - <<'PY'
+          from hls_engine import parse_master, parse_media, pick_variant, iv_for
+          m = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720\nhls/720/main.m3u8\n'
+          vs = parse_master(m, 'https://x/stream/a/master.m3u8')
+          assert vs and pick_variant(vs).resolution == '1280x720', vs
+          media = ('#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:7\n'
+                   '#EXT-X-KEY:METHOD=AES-128,URI="https://k/enc.key"\n'
+                   '#EXTINF:10,\n000.ts\n#EXTINF:10,\n001.ts\n')
+          segs, key, _ = parse_media(media, 'https://x/stream/a/hls/720/main.m3u8')
+          assert len(segs) == 2 and segs[0].seq == 7 and key['uri'].endswith('enc.key')
+          assert iv_for(key, 7).hex().endswith('07')
+          print('unit tests OK')
+          PY
+
+      - name: Mask token
+        run: echo "::add-mask::$TARGET_URL"
+
+      - name: India proxy download
+        id: dl
+        continue-on-error: true
+        env:
+          MIN_MB: ${{ inputs.min_mb || '0.5' }}
+          NO_PROXY_FLAG: ${{ inputs.no_proxy || '0' }}
+        run: |
+          EXTRA=""
+          if [ "$NO_PROXY_FLAG" = "1" ]; then EXTRA="--no-proxy"; fi
+          python india_download.py --url "$TARGET_URL" --min-mb "$MIN_MB" $EXTRA
+
+      - name: Show result
+        if: always()
+        run: |
+          ls -la downloaded_lecture.* 2>/dev/null || echo "no output file"
+          du -sh debug 2>/dev/null || true
+          echo "--- report ---"
+          cat run_report.md 2>/dev/null || echo "no report"
+
+      - name: Remux to MP4 if needed
+        if: always()
+        run: |
+          set -e
+          if [ -s downloaded_lecture.ts ] && [ ! -s downloaded_lecture.mp4 ]; then
+            if command -v ffmpeg >/dev/null; then
+              ffmpeg -y -hide_banner -loglevel warning -i downloaded_lecture.ts \
+                -c copy -movflags +faststart downloaded_lecture.mp4 \
+                && echo "remuxed ts -> mp4" || echo "remux failed, ts rakha hai"
+            fi
+          fi
+
+      - name: Upload lecture
+        if: steps.dl.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloaded-lecture
+          path: |
+            downloaded_lecture.mp4
+            downloaded_lecture.ts
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-logs
+          path: |
+            run_report.md
+            proxy_cache.json
+            debug/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Publish result (draft release)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.dl.outcome }}
+        run: |
+          TAG="india-run-${{ github.run_id }}"
+          {
+            echo "India-proxy download: **$OUTCOME**"
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            cat run_report.md 2>/dev/null || echo "no report"
+          } > /tmp/notes.md
+          gh release create "$TAG" --draft --title "India run #${{ github.run_number }} ($OUTCOME)" --notes-file /tmp/notes.md || true
+          for f in downloaded_lecture.mp4 downloaded_lecture.ts; do
+            if [ -s "$f" ]; then gh release upload "$TAG" "$f" --clobber && echo "uploaded $f"; fi
+          done
+
+      - name: Fail if nothing downloaded
+        if: steps.dl.outcome != 'success'
+        run: |
+          echo "::error::India-proxy download fail - run_report.md dekho"
+          exit 1
