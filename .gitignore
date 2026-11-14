@@ -1,0 +1,18 @@
+# Session credentials / captured media - never commit or upload
+.cookies.txt
+cookies.txt
+*.mp4
+*.ts
+*.mkv
+*.webm
+downloaded_lecture.*
+debug/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# jsdom test ke liye local symlink/deps
+tools/node_modules
+node_modules/
