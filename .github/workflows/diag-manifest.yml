@@ -1,0 +1,66 @@
+name: Diag Manifest (India)
+
+# Token -> manifest refresh India proxy se, kai header/method combos.
+# Result: fresh videoUrl+cookie mile to poora report draft release me.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "lecture URL (playerToken)"
+        required: true
+        type: string
+  repository_dispatch:
+    types: [diag-manifest]
+
+permissions:
+  contents: write
+
+env:
+  TARGET_URL: ${{ inputs.target_url || github.event.client_payload.url }}
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Fix DNS
+        run: |
+          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+          echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
+      - name: Install deps
+        run: pip install requests pycryptodome
+      - name: Mask token
+        run: echo "::add-mask::$TARGET_URL"
+      - name: Manifest refresh (India)
+        id: m
+        continue-on-error: true
+        run: python manifest_india.py "$TARGET_URL" 2>&1 | tee manifest.log
+      - name: Publish log
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.m.outcome }}
+        run: |
+          TAG="manifest-diag-${{ github.run_id }}"
+          {
+            echo "Manifest diag: **$OUTCOME**"
+            echo '```'
+            tail -80 manifest.log
+            echo '```'
+          } > /tmp/n.md
+          gh release create "$TAG" --draft --title "Manifest diag ($OUTCOME)" --notes-file /tmp/n.md || true
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-diag
+          path: |
+            manifest.log
+            manifest_result.json
+          if-no-files-found: ignore
