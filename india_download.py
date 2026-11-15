@@ -30,7 +30,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import proxies
 import resume_capture
-from hls_engine import HlsSession, download_hls
+import hls_fast
+from hls_engine import HlsSession
 
 WEB_TOKEN_KEY_SEED = "5d90298d9598093cf8cb4b55434de5bc"
 API_KEY_SEED = "939567f60cc4728ee81fc28fae7458af"
@@ -342,9 +343,11 @@ def main() -> int:
             tag = f"{label} via {session.proxy or 'direct'}"
             log(f"[hls] try: {tag}")
             try:
-                res = download_hls(url, session, out_base="downloaded_lecture",
-                                   workers=int(os.environ.get("HLS_WORKERS", "4")),
-                                   log=log, expect_min_bytes=expect)
+                res = hls_fast.download(
+                    url, session, out_base="downloaded_lecture",
+                    workers=int(os.environ.get("HLS_WORKERS", "8")),
+                    log=log, min_bytes=expect,
+                    max_seconds=int(os.environ.get("HLS_MAX_SECONDS", "1500")))
             except Exception as exc:
                 note(f"[{tag}] HLS error: {type(exc).__name__}: {str(exc)[:160]}")
                 attempts.append(f"{tag}: {type(exc).__name__}")
