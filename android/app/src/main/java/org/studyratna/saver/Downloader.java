@@ -624,10 +624,10 @@ public final class Downloader {
 
     /* ------------------------------------------------------------------ http -- */
 
-    static class Resp {
-        int status;
-        byte[] body;
-        String text;
+    public static class Resp {
+        public int status;
+        public byte[] body = new byte[0];
+        public String text = "";
     }
 
     private Resp http(String url, String cookie, String ua) {

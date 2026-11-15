@@ -112,8 +112,8 @@ public final class BrowserNet {
     }
 
     /** Blocking wrapper — Downloader background thread se use karta hai. */
-    public static Resp getText(String url) {
-        final Resp out = new Resp();
+    public static Downloader.Resp getText(String url) {
+        final Downloader.Resp out = new Downloader.Resp();
         final Object lock = new Object();
         fetchText(url, null, (status, body, text) -> {
             out.status = status;
@@ -130,12 +130,6 @@ public final class BrowserNet {
             }
         }
         return out;
-    }
-
-    public static class Resp {
-        public int status;
-        public byte[] body = new byte[0];
-        public String text = "";
     }
 
     /* -------------------------------------------------------------- internals -- */
