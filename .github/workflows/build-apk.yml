@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       version_name:
-        description: "Version name (default 1.0)"
+        description: "Version name (default 2.0)"
         required: false
-        default: "1.0"
+        default: "2.0"
         type: string
   push:
     paths:
@@ -209,8 +209,8 @@ jobs:
         run: |
           set -e
           ls -la android/app/build/outputs/apk/debug/ android/app/build/outputs/apk/release/
-          cp android/app/build/outputs/apk/debug/app-debug.apk lecture-saver-${{ inputs.version_name || '1.0' }}-debug.apk
-          cp android/app/build/outputs/apk/release/app-release.apk lecture-saver-${{ inputs.version_name || '1.0' }}.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk lecture-saver-${{ inputs.version_name || '2.0' }}-debug.apk
+          cp android/app/build/outputs/apk/release/app-release.apk lecture-saver-${{ inputs.version_name || '2.0' }}.apk
           ls -la *.apk
           echo "ok=1" >> $GITHUB_OUTPUT
 
@@ -232,7 +232,7 @@ jobs:
           {
             echo "Lecture Saver APK (debug-signed, sideload ke liye)"
             echo
-            echo "- version: ${{ inputs.version_name || '1.0' }}"
+            echo "- version: ${{ inputs.version_name || '2.0' }}"
             echo "- commit: ${{ github.sha }}"
             echo "- run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo "- apk verification step: $VERIFY_OUTCOME"
@@ -244,6 +244,6 @@ jobs:
             echo
             cat verify.md 2>/dev/null || echo "(verify.md missing)"
           } > /tmp/notes.md
-          gh release create "$TAG" --title "Lecture Saver APK ${{ inputs.version_name || '1.0' }}" --notes-file /tmp/notes.md
+          gh release create "$TAG" --title "Lecture Saver APK 2.0 (Dekho + Download)" --notes-file /tmp/notes.md
           gh release upload "$TAG" *.apk --clobber
           echo "Uploaded to draft release $TAG"
