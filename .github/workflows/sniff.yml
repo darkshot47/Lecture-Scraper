@@ -1,0 +1,63 @@
+name: Segment Sniff
+
+# player host + CloudFront + segments: cookie ke saath aur bina, har proxy par.
+# Result draft release me.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "lecture URL (playerToken)"
+        required: true
+        type: string
+  repository_dispatch:
+    types: [sniff]
+  push:
+    paths:
+      - "segment_sniff.py"
+      - ".github/workflows/sniff.yml"
+
+permissions:
+  contents: write
+
+env:
+  TARGET_URL: ${{ inputs.target_url || github.event.client_payload.url }}
+
+jobs:
+  sniff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Fix DNS
+        run: |
+          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+          echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
+      - name: Install deps
+        run: pip install requests pycryptodome
+      - name: Mask token
+        run: echo "::add-mask::$TARGET_URL"
+      - name: Sniff
+        id: s
+        continue-on-error: true
+        run: python segment_sniff.py "$TARGET_URL" 2>&1 | tee sniff.log
+      - name: Publish
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.s.outcome }}
+        run: |
+          TAG="sniff-${{ github.run_id }}"
+          { echo "Sniff: **$OUTCOME**"; echo '```'; tail -120 sniff.log; echo '```'; } > /tmp/n.md
+          gh release create "$TAG" --draft --title "Segment sniff ($OUTCOME)" --notes-file /tmp/n.md || true
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sniff
+          path: sniff.log
+          if-no-files-found: ignore
