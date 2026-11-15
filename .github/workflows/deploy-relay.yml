@@ -72,40 +72,86 @@ jobs:
           printf '{"orgId":"%s","projectId":"%s"}\n' "$ORG" "$PRJ" > .vercel/project.json
           echo "linked org=$ORG project=$PRJ"
 
-      - name: Deploy (try regions)
+      - name: Deploy via Vercel REST API (inline files)
         id: deploy
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          ORG: ${{ secrets.VERCEL_ORG_ID }}
+          PRJ: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
           LOG=/tmp/deploy.log
           : > "$LOG"
-          show() { tee -a "$LOG"; }
-          exec > >(show) 2>&1
+          ORG="${ORG:-team_odRcYvU96I7aUZSWt0HeaP7e}"
+          PRJ="${PRJ:-prj_trguyKhBAW4WhH7oAoJiFXVMAzOf}"
           REQ="${{ inputs.region || github.event.client_payload.region || 'auto' }}"
           if [ "$REQ" = "auto" ]; then REGIONS="bom1 iad1"; else REGIONS="$REQ"; fi
+
+          python3 - "$PRJ" <<'PYEOF'
+          import json, os, sys
+          files = []
+          for root, _, names in os.walk("."):
+              if any(x in root for x in ("node_modules", ".git", ".vercel")):
+                  continue
+              for n in names:
+                  fp = os.path.join(root, n)
+                  rel = fp[2:] if fp.startswith("./") else fp
+                  if rel.startswith(("api/", "public/")) or rel in ("package.json", "vercel.json"):
+                      files.append({"file": rel, "data": open(fp, encoding="utf-8").read()})
+          payload = {
+              "name": "lecture-relay",
+              "project": sys.argv[1],
+              "target": "production",
+              "files": files,
+              "projectSettings": {
+                  "framework": None,
+                  "buildCommand": None,
+                  "installCommand": None,
+                  "outputDirectory": None,
+                  "rootDirectory": None,
+                  "nodeVersion": "20.x",
+              },
+          }
+          json.dump(payload, open("/tmp/payload.json", "w"))
+          print("payload files:", [f["file"] for f in files])
+          PYEOF
+
           for REG in $REGIONS; do
-            python3 deploy_region.py "$REG"
-            echo "=== deploying with region=$REG ==="
-            set +e
-            OUT=$(vercel deploy --prod --yes --token "$VERCEL_TOKEN" --archive=tgz 2>&1)
-            RC=$?
-            set -e
-            echo "$OUT" | tail -40
-            if [ $RC -eq 0 ]; then
-              URL=$(echo "$OUT" | grep -Eo 'https://[a-z0-9.-]+\.vercel\.app' | tail -1)
+            echo "=== region=$REG ===" | tee -a "$LOG"
+            python3 -c "
+          import json,sys
+          p=json.load(open('/tmp/payload.json'))
+          p['regions']=['$REG']
+          json.dump(p, open('/tmp/payload.json','w'))
+          "
+            CODE=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X POST \
+              "https://api.vercel.com/v13/deployments?forceNew=1&teamId=${ORG}" \
+              -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data-binary @/tmp/payload.json)
+            echo "HTTP $CODE" | tee -a "$LOG"
+            head -c 4000 /tmp/resp.json | tee -a "$LOG"; echo | tee -a "$LOG"
+            if [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; then
               echo "region_used=$REG" >> "$GITHUB_OUTPUT"
-              echo "url=$URL" >> "$GITHUB_OUTPUT"
               echo "ok=true" >> "$GITHUB_OUTPUT"
+              tail -c 2000 /tmp/resp.json >> "$LOG"
               exit 0
             fi
-            if echo "$OUT" | grep -qiE "region|not available|plan|upgrade|forbidden"; then
-              echo "::warning::region $REG par deploy nahi hua (plan restriction?) — agla region try"
-              continue
+            # token teamId galat ho to bina teamId try karo
+            if [ "$CODE" = "403" ] || [ "$CODE" = "404" ]; then
+              echo "-- retry without teamId --" | tee -a "$LOG"
+              CODE=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X POST \
+                "https://api.vercel.com/v13/deployments?forceNew=1" \
+                -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data-binary @/tmp/payload.json)
+              echo "HTTP $CODE" | tee -a "$LOG"; head -c 3000 /tmp/resp.json | tee -a "$LOG"; echo | tee -a "$LOG"
+              if [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; then
+                echo "region_used=$REG" >> "$GITHUB_OUTPUT"; echo "ok=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
             fi
-            echo "::error::deploy failed (non-region error)"; exit 1
           done
           echo "ok=false" >> "$GITHUB_OUTPUT"
-          echo "::error::koi bhi region me deploy nahi hua"
           exit 1
 
       - name: Publish deploy diagnostics
