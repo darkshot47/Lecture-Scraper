@@ -109,19 +109,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set +e
           {
-            echo "Build fail — ${{ github.run_id }} (${{ github.sha }})"
-            echo
-            echo '```'
-            grep -E "^e: |error: |What went wrong|FAILURE:|Caused by" /tmp/build.log /tmp/build-rel.log 2>/dev/null | head -80 || echo "(no compiler lines found)"
-            echo '```'
-            echo
-            echo "Tail:"
-            echo '```'
-            tail -40 /tmp/build.log 2>/dev/null || true
-            echo '```'
-          } > /tmp/err.md
-          gh issue create --title "APK build fail (${{ github.run_id }})" --body-file /tmp/err.md || true
+            grep -hE "^e: |error: |What went wrong|FAILURE:|Caused by" /tmp/build.log /tmp/build-rel.log 2>/dev/null | head -40
+            echo "---TAIL---"
+            tail -30 /tmp/build.log 2>/dev/null
+          } > /tmp/err.txt
+          # releases khula hai; issue tracker band hai. Error ko tag ke naam me encode karo
+          # (max 120 chars) — phir `gh release list` se sandbox me padha ja sakta hai.
+          ENC=$(python3 - <<'EOF'
+import urllib.parse, re, os
+t = open('/tmp/err.txt', encoding='utf-8', errors='replace').read()
+t = re.sub(r'\x1b\[[0-9;]*m', '', t)
+t = re.sub(r'\s+', ' ', t).strip()
+print(urllib.parse.quote(t[:110]))
+EOF
+)
+          gh release create "err-${ENC}" --title "build error $(date -u +%H%M%S)" \
+            --notes "Build ${{ github.run_id }} fail. Error encoded in tag. Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
 
       - name: Verify APK contents
         id: verify
