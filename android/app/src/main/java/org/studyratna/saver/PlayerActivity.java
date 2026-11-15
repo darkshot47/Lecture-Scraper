@@ -12,6 +12,7 @@ import androidx.annotation.OptIn;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.datasource.okhttp.OkHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.hls.HlsMediaSource;
 import androidx.media3.exoplayer.source.MediaSource;
@@ -72,11 +73,16 @@ public class PlayerActivity extends Activity {
         player = new ExoPlayer.Builder(this).build();
         view.setPlayer(player);
 
-        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
-                .setUserAgent("Mozilla/5.0 (Linux; Android 13) LectureSaver/2.0")
-                .setAllowCrossProtocolRedirects(true)
-                .setConnectTimeoutMs(20000)
-                .setReadTimeoutMs(30000);
+        // OkHttp data source: HTTP/1.1 + Chrome headers -> Cloudflare 502 nahi
+        final okhttp3.OkHttpClient ok = new okhttp3.OkHttpClient.Builder()
+                .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(40, java.util.concurrent.TimeUnit.SECONDS)
+                .followRedirects(true)
+                .protocols(java.util.Collections.singletonList(okhttp3.Protocol.HTTP_1_1))
+                .build();
+        OkHttpDataSource.Factory http = new OkHttpDataSource.Factory(ok)
+                .setUserAgent(Http.UA)
+                .setDefaultRequestProperties(chromeHeaders());
 
         // ---- CDN (CloudFront) par jao: Cloudflare 502 yahan nahi lagta ----
         final String videoKey = Origin.videoKey(url);
@@ -121,9 +127,9 @@ public class PlayerActivity extends Activity {
                     retried = true;
                     String other = fPlayUrl.equals(url) ? (cdn == null ? url : cdn) : url;
                     String c = Origin.cookieFor(cookie == null ? "" : cookie, other);
-                    DefaultHttpDataSource.Factory h2 = new DefaultHttpDataSource.Factory()
-                            .setUserAgent("Mozilla/5.0 (Linux; Android 13) LectureSaver/2.2")
-                            .setAllowCrossProtocolRedirects(true);
+                    OkHttpDataSource.Factory h2 = new OkHttpDataSource.Factory(ok)
+                            .setUserAgent(Http.UA)
+                            .setDefaultRequestProperties(chromeHeaders());
                     if (!c.isEmpty()) {
                         h2.setDefaultRequestProperties(java.util.Collections.singletonMap("Cookie", c));
                     }
@@ -141,6 +147,22 @@ public class PlayerActivity extends Activity {
                         + "\nCDN: " + Origin.host(fPlayUrl));
             }
         });
+    }
+
+    /** Wahi browser headers jo Http/OkHttp bhejta hai (Cloudflare bypass). */
+    private static java.util.Map<String, String> chromeHeaders() {
+        java.util.Map<String, String> h = new java.util.LinkedHashMap<>();
+        h.put("Accept", "*/*");
+        h.put("Accept-Language", "en-IN,en;q=0.9,hi;q=0.8");
+        h.put("Sec-Fetch-Dest", "empty");
+        h.put("Sec-Fetch-Mode", "cors");
+        h.put("Sec-Fetch-Site", "cross-site");
+        h.put("Sec-CH-UA", "\"Chromium\";v=\"130\", \"Android WebView\";v=\"130\"");
+        h.put("Sec-CH-UA-Mobile", "?1");
+        h.put("Sec-CH-UA-Platform", "\"Android\"");
+        h.put("Referer", "https://player.studyratna.org/");
+        h.put("Origin", "https://player.studyratna.org");
+        return h;
     }
 
     private void toast(String m) {

@@ -61,6 +61,8 @@ public class PageActivity extends Activity {
     private java.io.OutputStream recOut;
     private long recBytes = 0;
     private String recMime = "video/webm";
+    private java.io.FileOutputStream mseOut;
+    private long mseBytes = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -176,7 +178,47 @@ public class PageActivity extends Activity {
             }
         });
 
-        web.setWebChromeClient(new WebChromeClient());
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture,
+                                          android.os.Message resultMsg) {
+                // site naye window me download kholti hai — usse bhi pakdo
+                final WebView pop = new WebView(PageActivity.this);
+                WebSettings ps = pop.getSettings();
+                ps.setJavaScriptEnabled(true);
+                ps.setDomStorageEnabled(true);
+                ps.setUserAgentString(view.getSettings().getUserAgentString());
+                pop.setWebViewClient(new WebViewClient() {
+                    @Override
+                    public boolean shouldOverrideUrlLoading(WebView v, String u) {
+                        if (looksLikeDownload(u)) {
+                            handlePageDownload(u, null, null);
+                            return true;
+                        }
+                        return false;   // normal page — popup me kholo
+                    }
+
+                    @Override
+                    public android.webkit.WebResourceResponse shouldInterceptRequest(
+                            WebView v, WebResourceRequest req) {
+                        NetSniffer.record(v, req);
+                        return null;
+                    }
+                });
+                pop.setDownloadListener((u, ua, cd, mime, len) ->
+                        handlePageDownload(u, mime, cd));
+                pop.setWebChromeClient(new WebChromeClient() {
+                    @Override
+                    public void onCloseWindow(WebView w) {
+                        bar.setText("popup band");
+                    }
+                });
+                ((android.webkit.WebView.WebViewTransport) resultMsg.obj).setWebView(pop);
+                resultMsg.sendToTarget();
+                bar.setText("site ne naya window khola — pakad rahe hain…");
+                return true;
+            }
+        });
         web.addJavascriptInterface(new RecBridge(), "AndroidBridge");
 
         /* ---- site ka download button / blob: ---- */
@@ -230,6 +272,16 @@ public class PageActivity extends Activity {
             bar.setText("download manager fail: " + e.getMessage());
             openExternal(u);
         }
+    }
+
+    /** URL download jaisa lagta hai? (file extension / download query) */
+    private static boolean looksLikeDownload(String u) {
+        if (u == null) return false;
+        String s = u.toLowerCase();
+        if (s.startsWith("blob:") || s.startsWith("data:")) return true;
+        if (s.contains(".mp4") || s.contains(".ts") || s.contains(".mkv")
+                || s.contains(".m3u8") || s.contains("download") || s.contains("attachment")) return true;
+        return false;
     }
 
     private void openExternal(String u) {
@@ -530,6 +582,11 @@ public class PageActivity extends Activity {
         recUri = null;
     }
 
+    private java.io.File mseFile() {
+        java.io.File f = new java.io.File(getFilesDir(), "decoded.ts");
+        return f;
+    }
+
     /** Recorder ka bridge: chunks (base64) + status. */
     public class RecBridge {
         @android.webkit.JavascriptInterface
@@ -538,6 +595,26 @@ public class PageActivity extends Activity {
             try {
                 org.json.JSONObject o = new org.json.JSONObject(json);
                 String type = o.optString("type");
+                if ("mse-chunk".equals(type)) {
+                    final String b64 = o.optString("b64");
+                    final boolean last = o.optBoolean("last");
+                    ui.post(() -> {
+                        try {
+                            byte[] data = android.util.Base64.decode(b64, android.util.Base64.DEFAULT);
+                            if (mseOut == null) mseOut = new java.io.FileOutputStream(mseFile());
+                            mseOut.write(data);
+                            mseBytes += data.length;
+                            if (last) {
+                                mseOut.flush();
+                                mseOut.close();
+                                mseOut = null;
+                            }
+                        } catch (Exception e) {
+                            bar.setText("decoded cache fail: " + e.getMessage());
+                        }
+                    });
+                    return;
+                }
                 if ("rec".equals(type)) {
                     final String b64 = o.optString("b64");
                     final String mime = o.optString("mime", "");

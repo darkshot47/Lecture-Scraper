@@ -473,6 +473,8 @@ public final class Downloader {
     private String keyHost = "?";
     private final List<String> keyDiag = new ArrayList<>();
     private final Map<String, byte[]> keyMemo = new LinkedHashMap<>();
+    /** Har request ka transport+status (screen par dikhta hai). */
+    public final List<String> routeLog = new ArrayList<>();
     private boolean keyLogged = false;
 
     /**
@@ -693,29 +695,18 @@ public final class Downloader {
     }
 
     private Resp httpWithHeaders(String url, Map<String, String> headers) {
+        String cookie = headers.get("Cookie");
+        Map<String, String> extra = new LinkedHashMap<>(headers);
+        extra.remove("Cookie");
+        extra.remove("User-Agent");
+        extra.remove("X-Label");
+
+        Http.Res r = Http.get(url, cookie, extra);
         Resp out = new Resp();
-        HttpURLConnection c = null;
-        try {
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(20000);
-            c.setReadTimeout(30000);
-            c.setInstanceFollowRedirects(true);
-            c.setRequestProperty("Accept-Encoding", "identity");
-            for (Map.Entry<String, String> e : headers.entrySet()) {
-                if (LABEL.equals(e.getKey())) continue;   // internal label, header nahi
-                c.setRequestProperty(e.getKey(), e.getValue());
-            }
-            out.status = c.getResponseCode();
-            InputStream in = out.status >= 400 ? c.getErrorStream() : c.getInputStream();
-            out.body = in == null ? new byte[0] : readAll(in);
-            out.text = new String(out.body, StandardCharsets.UTF_8);
-        } catch (Exception e) {
-            out.status = 0;
-            out.body = new byte[0];
-            out.text = "";
-        } finally {
-            if (c != null) c.disconnect();
-        }
+        out.status = r.status;
+        out.body = r.body;
+        out.text = r.text;
+        routeLog.add(r.route);
         return out;
     }
 

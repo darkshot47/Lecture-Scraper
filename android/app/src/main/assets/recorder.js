@@ -67,6 +67,16 @@
         var u8 = new Uint8Array(src);
         S.mse.push(u8);
         S.mseBytes += u8.length;
+        // decoded bytes disk par (key/capture ke bina bhi file ban jaye)
+        try {
+          var CH = 32000;
+          for (var o = 0; o < u8.length; o += CH) {
+            var sl = u8.subarray(o, Math.min(o + CH, u8.length));
+            var bin = "";
+            for (var j = 0; j < sl.length; j++) bin += String.fromCharCode(sl[j]);
+            send({ type: "mse-chunk", b64: btoa(bin), last: (o + CH >= u8.length) });
+          }
+        } catch (e) {}
         if (S.kind === "unknown" && u8.length > 8) {
           var tag = String.fromCharCode(u8[4], u8[5], u8[6], u8[7]);
           if (tag === "styp" || tag === "moof" || tag === "ftyp" || tag === "sidx") S.kind = "mp4";
