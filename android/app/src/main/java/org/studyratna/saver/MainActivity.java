@@ -65,6 +65,7 @@ public class MainActivity extends Activity {
     private Button sniffBtn;
     private Button pageBtn;
     private Button recBtn;
+    private Button probeBtn;
 
     private Token token;
     private Downloader.Result lastResult;
@@ -136,6 +137,11 @@ public class MainActivity extends Activity {
         pageBtn.setTextSize(14f);
         pageBtn.setOnClickListener(v -> openPage());
         root.addView(pageBtn);
+
+        probeBtn = big("🔬 Network probe (kaun sa raasta chalta hai)", 0xFF7C3AED);
+        probeBtn.setTextSize(13f);
+        probeBtn.setOnClickListener(v -> runProbe());
+        root.addView(probeBtn);
 
         sniffBtn = big("⚡ Key sniff (headers copy)", 0xFF9CA3AF);
         sniffBtn.setTextSize(12f);
@@ -237,6 +243,47 @@ public class MainActivity extends Activity {
         t.raw = raw;
         token = t;
         return t;
+    }
+
+
+    /**
+     * Network probe — ek tap me table:
+     *   master/media/seg0/key × player/CDN × okhttp/jdk/webview -> HTTP nnn
+     * Isse pata chalta hai Cloudflare kise rok raha hai aur CDN khula hai ya nahi.
+     */
+    private void runProbe() {
+        say("probe chal raha hai…");
+        bg.execute(() -> {
+            try {
+                Token t = tokenNow();
+                final StringBuilder sb = new StringBuilder();
+                NetProbe.runQuick(t, t.cookie == null ? "" : t.cookie, new NetProbe.Sink() {
+                    @Override
+                    public void onRow(NetProbe.Row r) {
+                        synchronized (sb) {
+                            sb.append(r.line()).append("\n");
+                            final String txt = sb.toString();
+                            ui.post(() -> details.setText(txt));
+                        }
+                    }
+
+                    @Override
+                    public void onDone(java.util.List<NetProbe.Row> rows) {
+                        StringBuilder ok = new StringBuilder();
+                        for (NetProbe.Row r : rows) {
+                            if (r.status == 200) ok.append(r.what).append("/").append(r.variant)
+                                    .append("/").append(r.transport).append(" ");
+                        }
+                        final String good = ok.toString().trim();
+                        ui.post(() -> say(good.isEmpty()
+                                ? "✗ koi raasta 200 nahi diya — table dekhein"
+                                : "✓ 200 mile: " + good));
+                    }
+                });
+            } catch (Exception e) {
+                say("probe fail: " + e.getMessage());
+            }
+        });
     }
 
     /* ---------------------------------------------------------------- watch -- */
