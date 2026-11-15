@@ -1,0 +1,75 @@
+name: Browser Probe
+
+# Asli Chrome me lecture khol kar saaf proof: kaunsa host 200 deta hai,
+# kaunsa 502/403, aur kaunse headers/cookies se. Result draft release me.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "lecture URL (playerToken)"
+        required: true
+        type: string
+  repository_dispatch:
+    types: [browser-probe]
+  push:
+    paths:
+      - "browser_probe.py"
+      - ".github/workflows/browser-probe.yml"
+
+permissions:
+  contents: write
+
+env:
+  TARGET_URL: ${{ inputs.target_url || github.event.client_payload.url }}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Fix DNS
+        run: |
+          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+          echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
+      - name: Install deps
+        timeout-minutes: 15
+        run: |
+          pip install playwright requests pycryptodome
+          python -m playwright install --with-deps chromium
+          python -m playwright install chrome || echo "chrome channel skip"
+      - name: Mask token
+        run: echo "::add-mask::$TARGET_URL"
+      - name: Probe
+        id: p
+        continue-on-error: true
+        run: python browser_probe.py 2>&1 | tee browser_probe.log
+      - name: Publish
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.p.outcome }}
+        run: |
+          TAG="browser-probe-${{ github.run_id }}"
+          {
+            echo "Browser probe: **$OUTCOME**"
+            echo '```'
+            tail -100 browser_probe.log
+            echo '```'
+          } > /tmp/n.md
+          gh release create "$TAG" --draft --title "Browser probe ($OUTCOME)" --notes-file /tmp/n.md || true
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-probe
+          path: |
+            browser_probe.json
+            browser_probe.log
+            shot-*.png
+          if-no-files-found: ignore
