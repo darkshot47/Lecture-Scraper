@@ -112,10 +112,35 @@ async function getBuf(url, cookie) {
 
 /* ------------------------------------------------------------ token decrypt */
 
+function resolveToken(raw) {
+  let s = String(raw || "").trim().replace(/^["']|["']$/g, "");
+  const m = s.match(/playerToken=([^&\s"'#]+)/i);
+  if (m) {
+    s = m[1];
+    try { s = decodeURIComponent(s); } catch { /* already decoded */ }
+  } else if (!s.includes(":") && /%3A/i.test(s)) {
+    try { s = decodeURIComponent(s); } catch { /* ignore */ }
+  }
+  s = s.trim();
+  if (/^https?:\/\//i.test(s)) {
+    throw new Error("link me playerToken= nahi mila — StudyRatna ka poora lecture link chahiye");
+  }
+  const parts = s.split(":");
+  if (parts.length !== 2) {
+    throw new Error(`token galat (${parts.length} hisse mile, 2 chahiye) — poora lecture link paste karein`);
+  }
+  const [iv, ct] = parts.map((x) => x.trim());
+  if (!/^[0-9a-fA-F]{32}$/.test(iv)) {
+    throw new Error(`IV galat (32 hex chahiye, mile ${iv.length}) — link adhoora paste hua`);
+  }
+  if (!/^[0-9a-fA-F]+$/.test(ct) || ct.length < 32 || ct.length % 32 !== 0) {
+    throw new Error(`encrypted part galat (${ct.length} hex) — link poora copy karein`);
+  }
+  return { iv, ct };
+}
+
 function decryptToken(raw) {
-  const tok = decodeURIComponent(String(raw || "").trim());
-  const [ivHex, ctHex] = tok.split(":");
-  if (!ivHex || !ctHex) throw new Error("token format galat (iv:ct chahiye)");
+  const { iv: ivHex, ct: ctHex } = resolveToken(raw);
   const key = crypto.createHash("sha256").update(TOKEN_SEED).digest();
   const d = crypto.createDecipheriv("aes-256-cbc", key, Buffer.from(ivHex, "hex"));
   const plain = Buffer.concat([d.update(Buffer.from(ctHex, "hex")), d.final()]);
@@ -202,6 +227,7 @@ function aesDecrypt(keyBuf, data, iv) {
 
 function statePath() { return path.join(CACHE_DIR, "state.json"); }
 function segPath(i) { return path.join(CACHE_DIR, `seg-${String(i).padStart(4, "0")}.bin`); }
+function rawSegPath(i) { return path.join(CACHE_DIR, `raw-${String(i).padStart(4, "0")}.bin`); }
 
 function loadState() {
   try { return JSON.parse(fs.readFileSync(statePath(), "utf8")); } catch { return null; }
@@ -331,12 +357,20 @@ async function main() {
   const ua = Math.floor((Date.now() >> 10) & 0xff);
   const fc = `\x1b[${ua % 6 + 2}m`;
 
+  let fatal = null;
+
   async function getKey(uri) {
+    if (fatal) throw fatal;
     let k = keyCache.get(uri);
     if (k) return k;
     const r = await getBuf(uri, cookie);
     if (r.status !== 200) {
-      throw new Error(`key HTTP ${r.status} (${new URL(uri).host})`);
+      const host = (() => { try { return new URL(uri).host; } catch { return "?"; } })();
+      if (r.status === 401 || r.status === 403) {
+        fatal = new Error(`AES key -> HTTP ${r.status} (${host}) — token/session expire`);
+        fatal.expired = true;
+      }
+      throw fatal || new Error(`key HTTP ${r.status} (${host})`);
     }
     k = r.buf;
     keyCache.set(uri, k);
@@ -363,23 +397,32 @@ async function main() {
   status(have, true);
 
   async function worker() {
-    while (cursor < total) {
+    while (cursor < total && !fatal) {
       const i = cursor++;
       const sp = segPath(i);
       if (fs.existsSync(sp) && fs.statSync(sp).size > 500) continue; // resume
       const seg = segments[i];
+      const encrypted = Boolean(seg.key && seg.key.method === "AES-128" && seg.key.uri);
+      const rawPath = rawSegPath(i);
       let data = null;
-      for (let attempt = 0; attempt < 3 && data === null; attempt++) {
+      for (let attempt = 0; attempt < 3 && data === null && !fatal; attempt++) {
         try {
-          const r = await getBuf(seg.url, cookie);
-          if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
-          data = r.buf;
-          if (seg.key && seg.key.method === "AES-128" && seg.key.uri) {
-            const k = await getKey(seg.key.uri);
-            data = aesDecrypt(k, data, ivFor(seg));
+          // 1) segment lao + encrypted cache karo (key expire ho to bhi data bache)
+          let raw = null;
+          if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 500) {
+            raw = fs.readFileSync(rawPath);       // pehle wale run ka encrypted data
+          } else {
+            const r = await getBuf(seg.url, cookie);
+            if (r.status !== 200) throw new Error(`segment HTTP ${r.status}`);
+            raw = r.buf;
+            fs.writeFileSync(rawPath, raw);       // encrypted hi — naye token se reuse hoga
           }
+          // 2) phir key
+          const k = encrypted ? await getKey(seg.key.uri) : null;
+          data = k ? aesDecrypt(k, raw, ivFor(seg)) : raw;
         } catch (e) {
           data = null;
+          if (fatal) break;
           if (attempt === 2) {
             fail++;
             process.stdout.write(`\n  ${C.bad("seg " + i + " fail")} ${C.dim(e.message)}`);
@@ -389,6 +432,8 @@ async function main() {
       if (data) {
         fs.writeFileSync(sp, data);
         bytes += data.length;
+      } else if (fatal) {
+        // key nahi mili — encrypted data cache me hai, agle run me kaam aayega
       }
       done++;
       status(done);
@@ -398,6 +443,29 @@ async function main() {
   await Promise.all(Array.from({ length: Math.min(args.workers, total) }, worker));
   status(total, true);
   process.stdout.write("\n");
+
+  if (fatal && fatal.expired) {
+    const rawCount = Array.from({ length: total }, (_, i) =>
+      fs.existsSync(rawSegPath(i)) && fs.statSync(rawSegPath(i)).size > 500).filter(Boolean).length;
+    say("");
+    say(C.bad("  ✗ TOKEN / SESSION EXPIRE HO GAYA"));
+    say(C.dim("    AES key endpoint ne 401 diya — segments milte hain par decrypt nahi ho sakte."));
+    say("");
+    if (rawCount > 0) {
+      say(C.ok(`  ↻ ${rawCount}/${total} encrypted segments save ho gaye`) +
+          C.dim("  (.lecture-cache/raw-*.bin)"));
+      say(C.dim("    Naye link se wahi command chalayein — download dobara nahi hoga,"));
+      say(C.dim("    sirf key aayegi aur file turant ban jayegi."));
+    }
+    say("");
+    say(C.bold("  Kya karein:"));
+    say("    1. StudyRatna me lecture dobara kholein (ya app refresh karein)");
+    say("    2. Naya link copy karein");
+    say("    3. Wahi command dobara chalayein:");
+    say(C.dim('       node download.mjs "<naya link>"'));
+    say("");
+    process.exit(3);
+  }
 
   const got = Array.from({ length: total }, (_, i) => fs.existsSync(segPath(i)) && fs.statSync(segPath(i)).size > 500);
   const gotCount = got.filter(Boolean).length;
