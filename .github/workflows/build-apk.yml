@@ -110,14 +110,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set +e
-          {
-            grep -hE "^e: |error: |What went wrong|FAILURE:|Caused by" /tmp/build.log /tmp/build-rel.log 2>/dev/null | head -40
-            echo "TAIL:"
-            tail -30 /tmp/build.log 2>/dev/null
-          } > /tmp/err.txt
-          ENC=$(python3 -c "import urllib.parse,re;t=open('/tmp/err.txt',encoding='utf-8',errors='replace').read();t=re.sub(r'\x1b\[[0-9;]*m','',t);t=re.sub(r'\s+',' ',t).strip();print(urllib.parse.quote(t[:100]))")
-          echo "encoded error: $ENC"
-          gh release create "err-$ENC" --title "build error ${{ github.run_id }}" --notes "log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
+          N=0
+          grep -hE "^e: |error:|FAILURE:|What went wrong" /tmp/build.log /tmp/build-rel.log 2>/dev/null \
+            | tr -d '\r' | head -12 > /tmp/lines.txt
+          while IFS= read -r line; do
+            N=$((N+1))
+            # har line apna tag: pure ASCII, koi & / ? nahi
+            SLUG=$(printf '%s' "$line" | tr -cd 'A-Za-z0-9 .:_,[-]' | tr -s ' ' '.' | cut -c1-90)
+            gh release create "e$N-43707173372-$SLUG" --title "err $N: ${{ github.run_id }}" \
+              --notes "log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
+          done < /tmp/lines.txt
+          echo "posted $N error lines"
 
       - name: Verify APK contents
         id: verify
