@@ -52,6 +52,7 @@ public class PageActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private boolean downloading = false;
     private Button recBtn;
+    private TextView detailsBox;
     private boolean recording = false;
     private boolean finishedOnce = false;
 
@@ -110,6 +111,16 @@ public class PageActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP));
 
+        detailsBox = new TextView(this);
+        detailsBox.setTextColor(0xFF111111);
+        detailsBox.setTextSize(10f);
+        detailsBox.setBackgroundColor(0xE6FFFFFF);
+        detailsBox.setPadding(12, 8, 12, 8);
+        detailsBox.setVisibility(TextView.VISIBLE);
+        root.addView(detailsBox, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM));
+
         setContentView(root);
 
         WebSettings s = web.getSettings();
@@ -119,7 +130,7 @@ public class PageActivity extends Activity {
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setLoadWithOverviewMode(true);
         s.setUseWideViewPort(true);
-        s.setUserAgentString(s.getUserAgentString() + " LectureSaver/2.1");
+        // UA par app ka naam nahi — site ke liye bilkul normal Chrome
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         }
@@ -148,8 +159,20 @@ public class PageActivity extends Activity {
                     String raw = getIntent() != null ? getIntent().getStringExtra(EXTRA_URL) : null;
                     if (raw != null && !raw.isEmpty()) web.evaluateJavascript(
                             "(function(){try{window.__lsPoke&&window.__lsPoke();}catch(e){}})()", null);
+                }, 4000);
+                // 10s baad: video ki asli haalat screen par (black screen debug)
+                ui.postDelayed(() -> web.evaluateJavascript(
+                        "(function(){try{return window.__lsProbe?window.__lsProbe():null;}catch(e){return null;}})()",
+                        v -> {
+                            String pr = unquote(v);
+                            if (pr != null && pr.startsWith("{")) {
+                                details(pr);
+                            }
+                        }), 10000);
+                // 12s baad REC khud (agar video ready ho)
+                ui.postDelayed(() -> {
                     if (!recording && !finishedOnce) toggleRecord();
-                }, 9000);
+                }, 12000);
             }
         });
 
@@ -380,6 +403,13 @@ public class PageActivity extends Activity {
                 "(function(){try{return window.__lsRecStart?window.__lsRecStart():0;}catch(e){return -1;}})()",
                 v -> {
                     String r = v == null ? "" : v.replace("\"", "");
+                    if ("2".equals(r)) {
+                        recording = true;
+                        recBtn.setText("⏹ Stop");
+                        bar.setText("AUDIO mode — video frames nahi, awaaz record ho rahi hai");
+                        ui.postDelayed(recPoll, 1500);
+                        return;
+                    }
                     if ("1".equals(r)) {
                         recording = true;
                         recBtn.setText("⏹ Stop");
@@ -619,6 +649,12 @@ public class PageActivity extends Activity {
             }
         } catch (Exception ignored) {
         }
+    }
+
+    private void details(String s) {
+        if (s == null) return;
+        if (detailsBox == null) return;
+        detailsBox.setText(s.replace(",", "\n  ").replace("{", "").replace("}", ""));
     }
 
     private void toast(String m) {

@@ -14,6 +14,26 @@ APK: **Actions → Build Android APK** wale run ka release, ya seedha
 Phone par: APK download → "Install unknown apps" allow → install.
 Release APK debug-signed hai (sideload ke liye theek, Play Store ke liye nahi).
 
+## CDN bypass (502 ka ilaaj)
+
+`player.studyratna.org` Cloudflare par hai -> native/WebView fetch par **502**.
+CDN seedha (`d1d34p8vz63oiq.cloudfront.net`) Cloudflare ke peeche nahi hai — wahan
+sirf CloudFront cookie chahiye (jo token me hi hai). Isliye `Origin.java`:
+
+* token URL -> `https://d1d34p8vz63oiq.cloudfront.net/<videoKey>/master.m3u8`
+* cookie jar = token ki cookie **+ WebView ke asli cookies**
+* playlist / variant / segments / key — sab CDN par (Cloudflare chhua hi nahi)
+
+## Black screen kyun tha
+
+Android System WebView ka media stack HLS/MSE par hardware decoder start nahi kar
+pata (video black, audio chalta hai) — ye known WebView issue hai. Isliye:
+
+* **Dekho** ab native ExoPlayer hi rehta hai, par **CDN + cookie** ke saath
+  (WebView ka MSE use nahi hota)
+* WebView (Page) sirf un kaamon ke liye: site ka download button, headers, REC fallback
+* `captureStream` WebView me nahi hota -> **audio-only fallback** (awaaz record)
+
 ## Kaise chalta hai
 
 ```
