@@ -51,6 +51,15 @@ public class PageActivity extends Activity {
     private Button pageDlBtn;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private boolean downloading = false;
+    private Button recBtn;
+    private boolean recording = false;
+    private boolean finishedOnce = false;
+
+    // recorder chunks -> Gallery (stream me, memory me nahi)
+    private android.net.Uri recUri;
+    private java.io.OutputStream recOut;
+    private long recBytes = 0;
+    private String recMime = "video/webm";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -90,6 +99,10 @@ public class PageActivity extends Activity {
         pageDlBtn.setLayoutParams(new LinearLayout.LayoutParams(0,
                 (int) (42 * getResources().getDisplayMetrics().density), 1f));
         row2.addView(pageDlBtn);
+        recBtn = btn("⏺ REC", v -> toggleRecord());
+        recBtn.setTextSize(12f);
+        row2.addView(recBtn);
+        row2.addView(btn("Save", v -> stopRecordAndSave()));
         row2.addView(btn("Copy log", v -> copyLog()));
         top.addView(row2);
 
@@ -126,13 +139,22 @@ public class PageActivity extends Activity {
                 NetSniffer.absorbCookiesFrom(u);
                 // recorder JS (backup capture) + download-catcher
                 injectAsset("inject_webview.js");
+                injectAsset("recorder.js");
                 BrowserNet.attach(web);
                 BrowserNet.eval(DL_CATCHER_JS);
                 BrowserNet.attach(web);
+                // lecture play hone ka intezaar, phir REC khud shuru
+                ui.postDelayed(() -> {
+                    String raw = getIntent() != null ? getIntent().getStringExtra(EXTRA_URL) : null;
+                    if (raw != null && !raw.isEmpty()) web.evaluateJavascript(
+                            "(function(){try{window.__lsPoke&&window.__lsPoke();}catch(e){}})()", null);
+                    if (!recording && !finishedOnce) toggleRecord();
+                }, 9000);
             }
         });
 
         web.setWebChromeClient(new WebChromeClient());
+        web.addJavascriptInterface(new RecBridge(), "AndroidBridge");
 
         /* ---- site ka download button / blob: ---- */
         web.setDownloadListener(new DownloadListener() {
@@ -339,6 +361,192 @@ public class PageActivity extends Activity {
         }).start();
     }
 
+
+    /* ------------------------------------------------------------- RECORDER -- */
+
+    /**
+     * REC: page ke andar jo video chal rahi hai use capture karo.
+     * Isme playlist/key/CORS ka koi role nahi — jo frames chalti hain wahi file
+     * me jaati hain, isliye 502/401 yahan aa hi nahi sakte.
+     */
+    private void toggleRecord() {
+        if (recording) {
+            stopRecordAndSave();
+            return;
+        }
+        recBytes = 0;
+        recMime = "video/webm";
+        web.evaluateJavascript(
+                "(function(){try{return window.__lsRecStart?window.__lsRecStart():0;}catch(e){return -1;}})()",
+                v -> {
+                    String r = v == null ? "" : v.replace("\"", "");
+                    if ("1".equals(r)) {
+                        recording = true;
+                        recBtn.setText("⏹ Stop");
+                        bar.setText("REC chalu — lecture ke aage-peeche seek kar raha hoon…");
+                        ui.postDelayed(recPoll, 1500);
+                    } else {
+                        bar.setText("recorder shuru nahi hua (captureStream support nahi?) — "
+                                + "lecture play karke 10s baad dobara dabayein");
+                    }
+                });
+    }
+
+    private final Runnable recPoll = new Runnable() {
+        @Override
+        public void run() {
+            if (web == null) return;
+            web.evaluateJavascript(
+                    "(function(){try{return window.__lsRecStatus?window.__lsRecStatus():null;}catch(e){return null;}})()",
+                    PageActivity.this::onRecStatus);
+            if (recording) ui.postDelayed(this, 1500);
+        }
+    };
+
+    private void onRecStatus(String value) {
+        String v = unquote(value);
+        if (v.isEmpty() || "null".equals(v)) return;
+        try {
+            org.json.JSONObject o = new org.json.JSONObject(v);
+            double pos = o.optDouble("pos", 0);
+            double dur = o.optDouble("duration", 0);
+            recBytes = o.optLong("bytes", recBytes);
+            String mime = o.optString("mime", recMime);
+            if (mime != null && !mime.isEmpty()) recMime = mime;
+            if (!recording) return;
+            bar.setText(String.format(java.util.Locale.US,
+                    "REC %.1f MB · %s%.0fs / %.0fs", recBytes / 1048576.0,
+                    o.optBoolean("finished") ? "complete " : "", pos, dur));
+            if (o.optBoolean("finished")) stopRecordAndSave();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void stopRecordAndSave() {
+        if (!recording) {
+            toast("recording chalu nahi");
+            return;
+        }
+        recording = false;
+        recBtn.setText("⏺ REC");
+        web.evaluateJavascript(
+                "(function(){try{window.__lsRecStop&&window.__lsRecStop();}catch(e){}})()", null);
+        // JS se aakhri chunks aane ke baad close hoga
+        ui.postDelayed(this::closeRecIfDone, 2500);
+    }
+
+    private void closeRecIfDone() {
+        closeRecStream(true);
+        bar.setText("✓ Gallery me save: Movies/LectureSaver " + recName());
+    }
+
+    private String recName() {
+        String ext = recMime != null && recMime.contains("mp4") ? ".mp4" : ".webm";
+        return "lecture-" + recStamp() + ext;
+    }
+
+    private static String recStamp() {
+        return new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+                .format(new java.util.Date());
+    }
+
+    /** MediaRecorder chunk -> seedha MediaStore file me (bade lecture ke liye zaroori). */
+    private void openRecStream() {
+        closeRecStream(false);
+        String name = recName();
+        String mime = mimeOf(name);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, name);
+                cv.put(android.provider.MediaStore.Video.Media.MIME_TYPE, mime);
+                cv.put(android.provider.MediaStore.Video.Media.RELATIVE_PATH,
+                        Environment.DIRECTORY_MOVIES + "/LectureSaver");
+                cv.put(android.provider.MediaStore.Video.Media.IS_PENDING, 1);
+                recUri = getContentResolver().insert(
+                        android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv);
+                if (recUri == null) return;
+                recOut = getContentResolver().openOutputStream(recUri, "w");
+            } else {
+                File dir = new File(Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_MOVIES), "LectureSaver");
+                if (!dir.exists()) dir.mkdirs();
+                File f = new File(dir, name);
+                recOut = new java.io.FileOutputStream(f);
+            }
+        } catch (Exception e) {
+            bar.setText("rec file fail: " + e.getMessage());
+        }
+    }
+
+    private String mimeOf(String name) {
+        return name.endsWith(".mp4") ? "video/mp4" : "video/webm";
+    }
+
+    private void closeRecStream(boolean ok) {
+        try {
+            if (recOut != null) {
+                recOut.flush();
+                recOut.close();
+            }
+        } catch (Exception ignored) {
+        }
+        recOut = null;
+        if (ok && recUri != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            android.content.ContentValues cv = new android.content.ContentValues();
+            cv.put(android.provider.MediaStore.Video.Media.IS_PENDING, 0);
+            getContentResolver().update(recUri, cv, null, null);
+        }
+        recUri = null;
+    }
+
+    /** Recorder ka bridge: chunks (base64) + status. */
+    public class RecBridge {
+        @android.webkit.JavascriptInterface
+        public void postMessage(String json) {
+            if (json == null) return;
+            try {
+                org.json.JSONObject o = new org.json.JSONObject(json);
+                String type = o.optString("type");
+                if ("rec".equals(type)) {
+                    final String b64 = o.optString("b64");
+                    final String mime = o.optString("mime", "");
+                    ui.post(() -> {
+                        if (recOut == null) openRecStream();
+                        try {
+                            byte[] data = android.util.Base64.decode(b64, android.util.Base64.DEFAULT);
+                            if (recOut != null) {
+                                recOut.write(data);
+                                recBytes += data.length;
+                            }
+                        } catch (Exception e) {
+                            bar.setText("rec write fail: " + e.getMessage());
+                        }
+                    });
+                    return;
+                }
+                if ("rec-done".equals(type)) {
+                    ui.post(() -> {
+                        if (recording) {
+                            recording = false;
+                            finishedOnce = true;
+                            recBtn.setText("⏺ REC");
+                            closeRecStream(true);
+                            bar.setText("✓ recording save ho gayi ("
+                                    + (recBytes / 1048576.0) + " MB) — Gallery dekhein");
+                        }
+                    });
+                    return;
+                }
+                if ("log".equals(type)) {
+                    final String msg = o.optString("msg");
+                    ui.post(() -> bar.setText(msg));
+                }
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     /* ---------------------------------------------------------------- utils -- */
 
     private Button btn(String text, android.view.View.OnClickListener l) {
@@ -426,6 +634,7 @@ public class PageActivity extends Activity {
     @Override
     protected void onDestroy() {
         ui.removeCallbacksAndMessages(null);
+        closeRecStream(false);
         if (web != null) web.destroy();
         super.onDestroy();
     }

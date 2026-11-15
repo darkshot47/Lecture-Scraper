@@ -74,7 +74,8 @@ jobs:
       - name: Check WebView injection script
         run: |
           node --check android/inject_webview.js
-          echo "inject_webview.js syntax OK"
+          node --check android/app/src/main/assets/recorder.js
+          echo "inject_webview.js + recorder.js syntax OK"
           # asset app me hi jaana chahiye (single source of truth)
           cmp android/inject_webview.js android/app/src/main/assets/inject_webview.js
           echo "asset copy identical"
