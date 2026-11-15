@@ -300,7 +300,11 @@ public final class Downloader {
                 if (r.status == 200 && (r.body.length == 16 || r.body.length == 32)
                         && (probe == null || keyWorks(r.body, probe, iv))) {
                     keyMemo.put(uri, r.body);
-                    write(kf, r.body);
+                    try {
+                        write(kf, r.body);
+                    } catch (Exception ignored) {
+                        // cache likhna fail ho to bhi key kaam ki hai
+                    }
                     if (!keyLogged) {
                         keyLogged = true;
                         stage("✓ AES key mil gayi (" + h.get("X-Label") + ")");

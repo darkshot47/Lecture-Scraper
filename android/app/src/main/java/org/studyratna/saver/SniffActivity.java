@@ -108,7 +108,7 @@ public class SniffActivity extends Activity {
         web.addJavascriptInterface(new RecBridge(), "AndroidBridge");
 
         web.loadUrl(url);
-        ui.postDelayed(this::tick, 1500);
+        ui.postDelayed(tickRunnable, 1500);
     }
 
     private Button btn(String text, android.view.View.OnClickListener l) {
@@ -124,11 +124,13 @@ public class SniffActivity extends Activity {
         return b;
     }
 
+    private final Runnable tickRunnable = this::tick;
+
     private void tick() {
         int n = NetSniffer.hits().size();
         int k = NetSniffer.keyHits().size();
         bar.setText("sniff: " + n + " req · key " + k);
-        ui.postDelayed(this, 1500);
+        ui.postDelayed(tickRunnable, 1500);
     }
 
     private void injectRecorder() {
@@ -193,6 +195,7 @@ public class SniffActivity extends Activity {
     @Override
     protected void onDestroy() {
         ui.removeCallbacksAndMessages(null);
+        if (tickRunnable != null) ui.removeCallbacks(tickRunnable);
         if (web != null) web.destroy();
         super.onDestroy();
     }
