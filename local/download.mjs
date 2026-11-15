@@ -88,6 +88,40 @@ const C = {
 const say = (...a) => console.log(...a);
 const mb = (n) => (n / 1048576).toFixed(1) + " MB";
 
+/**
+ * Cookie jar — player playlist/serve karte waqt `Set-Cookie` bhej sakta hai
+ * (Cloudflare access cookie, hls session cookie). Wo cookie key request me
+ * chahiye hoti hai. Pehle hum sirf token wali cookie bhejte the, isliye key 401.
+ */
+const jar = new Map();
+
+function jarHeader() {
+  return [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+}
+
+function absorbCookies(res) {
+  let list = [];
+  try {
+    if (typeof res.headers.getSetCookie === "function") list = res.headers.getSetCookie();
+    else {
+      const one = res.headers.get("set-cookie");
+      if (one) list = [one];
+    }
+  } catch { /* ignore */ }
+  for (const c of list) {
+    const pair = String(c).split(";")[0];
+    const i = pair.indexOf("=");
+    if (i > 0) jar.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim());
+  }
+}
+
+/** token wali cookie + jar ki cookies ek saath */
+function mergeCookie(cookie) {
+  const extra = jarHeader();
+  if (cookie && extra) return `${cookie}; ${extra}`;
+  return cookie || extra;
+}
+
 function headersFor(cookie) {
   const h = {
     "user-agent": UA,
@@ -96,17 +130,20 @@ function headersFor(cookie) {
     referer: APP_ORIGIN + "/",
     origin: APP_ORIGIN,
   };
-  if (cookie) h.cookie = cookie;
+  const c = mergeCookie(cookie);
+  if (c) h.cookie = c;
   return h;
 }
 
 async function getText(url, cookie) {
   const r = await fetch(url, { headers: headersFor(cookie), redirect: "follow" });
+  absorbCookies(r);
   return { status: r.status, text: await r.text(), url: r.url || url };
 }
 
 async function getBuf(url, cookie) {
   const r = await fetch(url, { headers: headersFor(cookie), redirect: "follow" });
+  absorbCookies(r);
   return { status: r.status, buf: Buffer.from(await r.arrayBuffer()), url: r.url || url };
 }
 
@@ -146,6 +183,152 @@ function decryptToken(raw) {
   const plain = Buffer.concat([d.update(Buffer.from(ctHex, "hex")), d.final()]);
   const data = JSON.parse(plain.toString("utf8"));
   return { data, cookie: data.cookie || "", videoUrl: data.videoUrl || data.url || "" };
+}
+
+
+/**
+ * Key endpoint ke liye auth strategies.
+ *
+ * Live test: playlist 200, segments 200, par AES key endpoint 401 deta hai —
+ * token 3 min purana hone ke baad bhi. Matlab 401 ka matlab sirf "purana token"
+ * nahi hai; endpoint ko kuch aur chahiye (init data / player referer / api key).
+ * Isliye yahan 6 variants try hote hain aur jo 200 de wahi jeetta hai.
+ */
+function headerVariants(cookie, initData, authToken) {
+  const base = {
+    accept: "*/*",
+    "accept-language": "en-IN,en;q=0.9",
+    "user-agent": UA,
+  };
+  const tma = initData ? encodeURIComponent(initData) : "";
+  const out = [
+    // 1: app context
+    { label: "app-referer", h: { ...base, referer: APP_ORIGIN + "/", origin: APP_ORIGIN } },
+    // 2: player context (key player host se aa rahi hai)
+    { label: "player-referer", h: { ...base, referer: "https://player.studyratna.org/", origin: "https://player.studyratna.org" } },
+    // 3: penpencil api context (asli key server)
+    { label: "api-referer", h: { ...base, referer: "https://www.penpencil.co/", origin: "https://www.penpencil.co" } },
+    // 4: Telegram init data header
+    tma && { label: "tma-header", h: { ...base, referer: APP_ORIGIN + "/", "x-init-data": tma } },
+    // 5: Bearer init data
+    tma && { label: "bearer-initdata", h: { ...base, referer: APP_ORIGIN + "/", authorization: "Bearer " + initData } },
+    // 6: pw client headers (penpencil API ka client-id)
+    {
+      label: "pw-client",
+      h: {
+        ...base,
+        referer: APP_ORIGIN + "/",
+        "client-id": "5eb393ee95fab7468a79d189",
+        "client-type": "WEB",
+        "client-version": "5.0.0",
+      },
+    },
+    // 7: browser auth header (agar token me jwt ho)
+    authToken && {
+      label: "auth-bearer",
+      h: { ...base, referer: APP_ORIGIN + "/", authorization: "Bearer " + authToken },
+    },
+  ].filter(Boolean);
+  const merged = mergeCookie(cookie);
+  if (merged) for (const v of out) v.h.cookie = merged;
+  return out;
+}
+
+
+/**
+ * keyHunt() — jab get-hls-key 401/403 de to key ghusaane ke aur raaste.
+ *
+ * Raaste (sasta → mehnga):
+ *   1. key URI ko path/query alag tarah se bhejna (path form kabhi khula hota hai)
+ *   2. player ke proxy endpoints (/ ?url=, /proxy?url=, /hls/, /key)
+ *   3. CloudFront origin par direct (CDN host)
+ *   4. player JS bundle scan -> key URL / header ka pattern
+ *
+ * Har candidate `headerVariants()` ke saath try hota hai. Jo 16/32 bytes de,
+ * wahi key. True/False lautata hai.
+ */
+async function keyHunt(keyUri, cookie, initData, authToken, log = () => {}, probeRaw = null, probeIv = null) {
+  const variants = headerVariants(cookie, initData, authToken);
+  let videoKey = "?";
+  try {
+    const u = new URL(keyUri);
+    videoKey = u.searchParams.get("videoKey") || u.pathname.split("/").filter(Boolean).pop();
+  } catch { /* ignore */ }
+
+  const playerOrigin = (() => {
+    try { const u = new URL(keyUri); return u.origin; } catch { return "https://player.studyratna.org"; }
+  })();
+
+  const cands = [];
+  const add = (u) => { if (u && /^https?:\/\//.test(u) && !cands.includes(u)) cands.push(u); };
+
+  // 1) wahi endpoint, alag shape
+  try {
+    const u = new URL(keyUri);
+    u.pathname = "/v1/videos/get-hls-key";
+    add(u.toString());
+    u.searchParams.set("key", "enc-720.key"); add(u.toString());
+    u.searchParams.set("key", "hls.key"); add(u.toString());
+    u.searchParams.set("key", "key.bin"); add(u.toString());
+  } catch { /* ignore */ }
+
+  // 2) player proxy
+  add(`${playerOrigin}/?url=${encodeURIComponent(keyUri)}`);
+  add(`${playerOrigin}/proxy?url=${encodeURIComponent(keyUri)}`);
+  add(`${playerOrigin}/hls/${videoKey}/enc.key`);
+  add(`${playerOrigin}/key/${videoKey}`);
+  add(`${playerOrigin}/stream/${videoKey}/enc.key`);
+  add(`${playerOrigin}/stream/${videoKey}/hls/720/enc.key`);
+
+  // 3) cloudfront origin
+  add(`https://d1d34p8vz63oiq.cloudfront.net/${videoKey}/enc.key`);
+  add(`https://d1d34p8vz63oiq.cloudfront.net/${videoKey}/hls/720/enc.key`);
+  add(`https://d1d34p8vz63oiq.cloudfront.net/${videoKey}/hls/720/enc-720.key`);
+
+  // 4) player JS bundle se naye raaste
+  const jsSeen = new Set();
+  const scanJs = async (pageUrl) => {
+    const pg = await getText(pageUrl, cookie);
+    if (pg.status !== 200) return;
+    const srcs = [...pg.text.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map((m) => m[1]);
+    for (const src of srcs.slice(0, 6)) {
+      let u; try { u = new URL(src, pageUrl).toString(); } catch { continue; }
+      if (jsSeen.has(u)) continue;
+      jsSeen.add(u);
+      const js = await getText(u, cookie);
+      if (js.status !== 200) continue;
+      const t = js.text;
+      // key URL patterns
+      for (const m of t.matchAll(/["'`]([^"'`\s]{0,120}(?:get-hls-key|enc\.key|hls-key)[^"'`\s]{0,80})["'`]/gi)) {
+        let cand = m[1];
+        if (cand.startsWith("/")) cand = playerOrigin + cand;
+        if (/^https?:/.test(cand)) add(cand);
+      }
+      // auth header patterns
+      const hdrHints = [...t.matchAll(/(authorization|x-api-key|client-id|token)\s*["']?\s*[:=]\s*["']([A-Za-z0-9 _\-.]{8,120})["']/gi)];
+      for (const h of hdrHints.slice(0, 4)) {
+        log(`    js hint: ${h[1]} = ${h[2].slice(0, 40)}…`);
+      }
+    }
+  };
+  await scanJs(playerOrigin + "/").catch(() => {});
+
+  log(`    ${cands.length} key URL candidates, ${variants.length} header sets`);
+
+  for (const cand of cands) {
+    for (const v of variants) {
+      try {
+        const r = await fetch(cand, { headers: v.h, redirect: "follow", signal: AbortSignal.timeout(12000) });
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (r.status === 200 && (buf.length === 16 || buf.length === 32)) {
+          if (probeRaw && !keyWorks(buf, probeRaw, probeIv)) continue; // 200 par galat key
+          log(`    ✓ HIT ${v.label} ${cand.slice(0, 70)}`);
+          return buf;
+        }
+      } catch { /* skip */ }
+    }
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------- m3u8 */
@@ -223,6 +406,24 @@ function aesDecrypt(keyBuf, data, iv) {
   }
 }
 
+/**
+ * AES key sahi hai ya nahi — asli test: pehla block decrypt karke MPEG-TS sync
+ * byte (0x47) dhoondna. Galat 16 bytes bhi "200 OK" me aa sakte hain.
+ */
+function keyWorks(keyBuf, raw, iv) {
+  try {
+    const n = Math.min(raw.length, 188 * 5);
+    const first = aesDecrypt(keyBuf, raw.subarray(0, 16 * Math.ceil(n / 16)), iv);
+    // TS packets 188 bytes ke hote hain; kisi bhi offset par 3 lagataar sync byte
+    for (let off = 0; off < 188; off++) {
+      if (first[off] === 0x47 && first[off + 188] === 0x47 && first[off + 376] === 0x47) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /* ------------------------------------------------------------------- state */
 
 function statePath() { return path.join(CACHE_DIR, "state.json"); }
@@ -297,6 +498,8 @@ async function main() {
   say(C.ok("  ✓ token decrypt") + C.dim(`  videoUrl mil gaya${ageMin !== null ? ` · auth ${ageMin} min purana` : ""}`));
 
   const cookie = info.cookie;
+  const initData = info.data && info.data.initData ? decodeURIComponent(info.data.initData) : "";
+  const authToken = info.data && (info.data.jwt || info.data.accessToken || info.data.token) || "";
 
   /* ------------------------------------------------------------- 2. playlist */
   let master;
@@ -359,25 +562,118 @@ async function main() {
 
   let fatal = null;
 
-  async function getKey(uri) {
+  const keyDiag = [];
+  let keyStrategy = null;
+  let keySaid = false;
+  let huntTried = false;
+  let keySweep = null; // ek hi sweep — 4 workers ek saath na karein (warna 401 x4)
+
+  // keyprobe.mjs / pichhla run jo key chhod gaya ho use pehle try karo
+  const KEY_FILE = path.join(CACHE_DIR, "hlskey.bin");
+  function keyFromDisk() {
+    try {
+      const b = fs.readFileSync(KEY_FILE);
+      if (b.length === 16 || b.length === 32) return b;
+    } catch { /* nahi hai */ }
+    return null;
+  }
+  let diskKeyBad = false;
+
+  async function getKey(uri, probeRaw = null, probeIv = null) {
     if (fatal) throw fatal;
     let k = keyCache.get(uri);
     if (k) return k;
-    const r = await getBuf(uri, cookie);
-    if (r.status !== 200) {
-      const host = (() => { try { return new URL(uri).host; } catch { return "?"; } })();
-      if (r.status === 401 || r.status === 403) {
-        fatal = new Error(`AES key -> HTTP ${r.status} (${host}) — token/session expire`);
-        fatal.expired = true;
+    const disk = keyFromDisk();
+    if (disk && (!probeRaw || keyWorks(disk, probeRaw, probeIv))) {
+      keyCache.set(uri, disk);
+      if (!getKey.diskSaid) {
+        getKey.diskSaid = true;
+        say(C.dim("  key cache/hlskey.bin se li gayi"));
       }
-      throw fatal || new Error(`key HTTP ${r.status} (${host})`);
+      return disk;
     }
-    k = r.buf;
-    keyCache.set(uri, k);
-    return k;
+    if (disk && !diskKeyBad) {
+      diskKeyBad = true;
+      say(C.dim("  cache/hlskey.bin ki key is video par kaam nahi kar rahi — ignore"));
+    }
+
+    const variants = keyStrategy
+      ? [keyStrategy]
+      : headerVariants(cookie, initData, authToken);
+
+    if (keySweep) return keySweep;
+    keySweep = (async () => {
+      let lastStatus = 0, lastBody = "";
+      for (const v of variants) {
+        const r = await fetch(uri, { headers: v.h, redirect: "follow" });
+        absorbCookies(r);
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (!keyDiag.some((d) => d.v === v.label)) keyDiag.push({ v: v.label, status: r.status, len: buf.length });
+        if (r.status === 200 && (buf.length === 16 || buf.length === 32) && probeRaw) {
+          // asli test — is key se segment decrypt hota hai?
+          if (!keyWorks(buf, probeRaw, probeIv)) {
+            if (!keySaid) { keySaid = true; process.stdout.write(`\n  ${C.dim("  (" + v.label + " ne 200 diya par key galat hai — aage)")}`); }
+            lastStatus = 200; lastBody = "wrong key"; continue;
+          }
+        }
+        if (r.status === 200 && buf.length >= 16) {
+          keyStrategy = v;
+          if (!keySaid) {
+            keySaid = true;
+            process.stdout.write(
+              `\n  ${C.ok("✓ AES key mil gayi")} ${C.dim("(" + v.label + ", " + buf.length + " bytes)")}`
+            );
+          }
+          keyCache.set(uri, buf);
+          return buf;
+        }
+        lastStatus = r.status;
+        lastBody = buf.toString("utf8").slice(0, 200);
+      }
+
+      // koi bhi valid key nahi mili (401/403 ya 200-par-galat) -> alag raaste try karo
+      if (!huntTried) {
+        huntTried = true;
+        process.stdout.write(`\n  ${C.dim("key 401 — aur raaste try kar raha hoon…")}`);
+        const hunted = await keyHunt(uri, cookie, initData, authToken, (m) => say(m), probeRaw, probeIv).catch(() => null);
+        if (hunted) {
+          keyStrategy = { label: "keyHunt", h: variants[0].h };
+          keyCache.set(uri, hunted);
+          fs.mkdirSync(CACHE_DIR, { recursive: true });
+          fs.writeFileSync(path.join(CACHE_DIR, "hlskey.bin"), hunted);
+          process.stdout.write(`\n  ${C.ok("✓ AES key mil gayi")} ${C.dim("(keyHunt, " + hunted.length + " bytes)")}`);
+          return hunted;
+        }
+      }
+
+      const host = (() => { try { return new URL(uri).host; } catch { return "?"; } })();
+      let err;
+      if (lastStatus === 401 || lastStatus === 403 || lastStatus === 200) {
+        err = new Error(
+          lastStatus === 200
+            ? `AES key endpoint ne 200 diya par key galat hai (${host})`
+            : `AES key -> HTTP ${lastStatus} (${host}) — koi bhi auth variant kaam nahi kiya`
+        );
+        err.expired = true;
+        err.diag = keyDiag;
+        err.host = host;
+        err.body = lastBody;
+        fatal = err;
+      } else {
+        err = new Error(`key HTTP ${lastStatus} (${host})`);
+      }
+      keySweep = null;
+      throw err;
+    })();
+    return keySweep;
   }
 
-  let done = have, bytes = 0, fail = 0, cursor = 0;
+  // resume par pehle se maujood segments ka size bhi gino (warna 0.0 MB dikhta hai)
+  let bytes = 0;
+  for (let i = 0; i < total; i++) {
+    try { bytes += fs.statSync(segPath(i)).size; } catch { /* missing */ }
+  }
+  let done = have, fail = 0, cursor = 0;
   const t0 = Date.now();
 
   function status(doneN, force = false) {
@@ -417,8 +713,9 @@ async function main() {
             raw = r.buf;
             fs.writeFileSync(rawPath, raw);       // encrypted hi — naye token se reuse hoga
           }
-          // 2) phir key
-          const k = encrypted ? await getKey(seg.key.uri) : null;
+          // 2) phir key — agar segment already plain MPEG-TS hai (0x47) to key ki zaroorat nahi
+          const plainTs = raw.length > 188 && raw[0] === 0x47;
+          const k = (encrypted && !plainTs) ? await getKey(seg.key.uri, raw, ivFor(seg)) : null;
           data = k ? aesDecrypt(k, raw, ivFor(seg)) : raw;
         } catch (e) {
           data = null;
@@ -448,8 +745,9 @@ async function main() {
     const rawCount = Array.from({ length: total }, (_, i) =>
       fs.existsSync(rawSegPath(i)) && fs.statSync(rawSegPath(i)).size > 500).filter(Boolean).length;
     say("");
-    say(C.bad("  ✗ TOKEN / SESSION EXPIRE HO GAYA"));
-    say(C.dim("    AES key endpoint ne 401 diya — segments milte hain par decrypt nahi ho sakte."));
+    say(C.bad("  ✗ AES KEY NAHI MILI (401)"));
+    say(C.dim("    Segments aa rahe hain, bas decrypt karne wali key nahi mili."));
+    say(C.dim("    Ye zaroori nahi ke link purana ho — endpoint header/cookie maang raha hai."));
     say("");
     if (rawCount > 0) {
       say(C.ok(`  ↻ ${rawCount}/${total} encrypted segments save ho gaye`) +
@@ -458,11 +756,18 @@ async function main() {
       say(C.dim("    sirf key aayegi aur file turant ban jayegi."));
     }
     say("");
+    say(C.bold("  Key endpoint ne kaha nahi: ") + C.dim(fatal.host || "?"));
+    if (fatal.diag) {
+      for (const d of fatal.diag) {
+        say(C.dim(`    ${d.v.padEnd(16)} -> HTTP ${d.status} (${d.len} bytes)`));
+      }
+    }
+    if (fatal.body) say(C.dim("    body: " + fatal.body.replace(/\s+/g, " ").slice(0, 120)));
+    say("");
     say(C.bold("  Kya karein:"));
-    say("    1. StudyRatna me lecture dobara kholein (ya app refresh karein)");
-    say("    2. Naya link copy karein");
-    say("    3. Wahi command dobara chalayein:");
-    say(C.dim('       node download.mjs "<naya link>"'));
+    say("    1. Vercel site se try karein (browser mode): " + C.dim("https://lecture-relay.vercel.app"));
+    say("    2. Naya link — StudyRatna lecture dobara kholein");
+    say("    3. Ye diagnostics mujhe bhej dein (upar ki lines)");
     say("");
     process.exit(3);
   }
@@ -474,8 +779,8 @@ async function main() {
   if (gotCount === 0) {
     say("");
     say(C.bad("  ✗ Ek bhi segment nahi mila — kuch banane ko nahi hai."));
-    say(C.dim("    Aksar wajah: key endpoint (API) block, ya network badal chuka hai."));
-    say(C.dim("    WiFi <-> mobile data badal ke dobara try karein."));
+    say(C.dim("    Upar ke 'seg N fail' lines dekhein — asli wajah wahin likhi hai."));
+    say(C.dim("    Key 401 -> token/session; HTTP 502 -> network."));
     process.exit(2);
   }
   if (gotCount < total) {

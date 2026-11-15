@@ -4,20 +4,29 @@
 #   bash get-and-download.sh "$(termux-clipboard-get)"
 cd "$(dirname "$0")" || exit 1
 
-RAW="https://raw.githubusercontent.com/darkshot47/Lecture-Scraper/main/local/download.mjs"
-echo "  download.mjs update ho raha hai…"
-if curl -fsSL "$RAW" -o download.mjs.new; then
-  mv download.mjs.new download.mjs
-  echo "  ✓ latest version"
-else
-  rm -f download.mjs.new
-  echo "  (update fail — jo file hai usse chala rahe hain)"
+BASE="https://raw.githubusercontent.com/darkshot47/Lecture-Scraper/main/local"
+echo "  update ho raha hai…"
+ok=1
+for f in download.mjs keyprobe.mjs; do
+  if curl -fsSL "$BASE/$f" -o "$f.new"; then
+    mv "$f.new" "$f"
+  else
+    rm -f "$f.new"; ok=0
+  fi
+done
+[ "$ok" = 1 ] && echo "  ✓ latest version" || echo "  (update fail — jo file hai usse chala rahe hain)"
+
+# key ka pata lagane wala mode
+if [ "$1" = "probe" ] || [ "$1" = "key" ]; then
+  shift
+  exec node keyprobe.mjs "$@"
 fi
 
 if [ -z "$1" ]; then
   echo ""
   echo '  Istemal: bash get-and-download.sh "https://app.studyratna.org/?playerToken=..."'
   echo '  ya     : bash get-and-download.sh "$(termux-clipboard-get)"'
+  echo '  key check: bash get-and-download.sh probe "…link…"'
   echo ""
   exit 1
 fi
