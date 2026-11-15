@@ -75,7 +75,7 @@ maar de to: Settings → Apps → Termux → Battery → **Unrestricted**.
 | Baat | Kya karein |
 |---|---|
 | 5597 min purana token | **Naya link** lein (StudyRatna se dobara kholein). Purana token chal sakta hai par playlist/key band ho sakti hai |
-| `key HTTP 401/403` | **Token expire** → lecture dobara khol ke naya link lein. Segments cache me safe hain — naye link se turant ban jayega |
+| `AES KEY NAHI MILI (401)` | Script khud 13 key URL × 7 header set + player proxy try karta hai. Phir bhi na mile to `bash get-and-download.sh probe "<link>"` chala ke output bhejein. Segments cache me safe hain — key milte hi file turant ban jayegi |
 | `key HTTP 404` | Key endpoint badal gaya → mujhe bata dein |
 | `player ne 502 diya` | Us network par player band → network badal ke dekhein |
 | 3-4 segment fail | `--resume` dobara chalayein, sirf missing aayenge |
