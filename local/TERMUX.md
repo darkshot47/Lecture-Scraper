@@ -20,6 +20,12 @@ cd ~/lr
 node download.mjs "https://app.studyratna.org/?playerToken=..."
 ```
 
+**Poora link chalega** — `playerToken=` khud nikal liya jaata hai. Ya clipboard se:
+
+```bash
+bash get-and-download.sh "$(termux-clipboard-get)"
+```
+
 16:41 lecture = **106 segments**, ~6-10 minute me `.mp4` ban jayega.
 
 ### Options
@@ -69,7 +75,8 @@ maar de to: Settings → Apps → Termux → Battery → **Unrestricted**.
 | Baat | Kya karein |
 |---|---|
 | 5597 min purana token | **Naya link** lein (StudyRatna se dobara kholein). Purana token chal sakta hai par playlist/key band ho sakti hai |
-| `key HTTP 403/404` | Key endpoint block → WiFi ↔ mobile data badal ke dekhein |
+| `key HTTP 401/403` | **Token expire** → lecture dobara khol ke naya link lein. Segments cache me safe hain — naye link se turant ban jayega |
+| `key HTTP 404` | Key endpoint badal gaya → mujhe bata dein |
 | `player ne 502 diya` | Us network par player band → network badal ke dekhein |
 | 3-4 segment fail | `--resume` dobara chalayein, sirf missing aayenge |
 | ffmpeg nahi | `pkg install ffmpeg -y` (MP4 ke liye). Bina ffmpeg `.ts` banta hai — VLC me chalta hai |
