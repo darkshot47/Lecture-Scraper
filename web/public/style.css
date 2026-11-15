@@ -29,3 +29,7 @@ pre#log .bad{color:#f87171}
 pre#log .dim{color:#5f6880}
 footer{margin-top:16px;color:#5f6880;font-size:11.5px}
 footer span{color:#8b93a7;font-weight:600}
+.diag{margin-top:14px;background:#0d1017;border:1px solid #1f2636;border-radius:14px;padding:12px 14px}
+.diag summary{cursor:pointer;color:#8b93a7;font-size:12.5px;font-weight:600}
+.diag[open] summary{margin-bottom:10px}
+.url{margin:10px 0 0;color:#5f6880;font:11px/1.5 ui-monospace,monospace;word-break:break-all}

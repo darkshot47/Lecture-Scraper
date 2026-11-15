@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Lecture Relay — India Edge</title>
+<title>Lecture → MP4</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -11,36 +11,42 @@
   <header>
     <div class="logo">▶</div>
     <div>
-      <h1>Lecture Relay</h1>
-      <p class="sub">Token → segments → <b>playable MP4</b>. Sab kuch Vercel ke
-      Mumbai (bom1) node se — <b>India IP, koi proxy nahi</b>.</p>
+      <h1>Lecture → MP4</h1>
+      <p class="sub">Download <b>aapke browser</b> me hota hai — aapka asli India IP use hota hai,
+      isliye player ka Cloudflare block nahi lagta. Token kisi server par nahi jaata.</p>
     </div>
   </header>
 
   <label for="tok">Lecture link ya playerToken</label>
   <textarea id="tok" spellcheck="false"
-    placeholder="https://app.studyratna.org/?playerToken=...&nbsp;&nbsp;(ya sirf token)"></textarea>
+    placeholder="https://app.studyratna.org/?playerToken=...   (ya sirf token)"></textarea>
 
   <div class="row">
     <button id="insp">1 · Token check</button>
     <button id="test">2 · Player test</button>
-    <button id="plan">3 · Plan</button>
-    <button id="dl" class="primary">4 · MP4 download</button>
+    <button id="dl" class="primary">3 · MP4 download</button>
   </div>
 
   <div class="progress"><div id="bar"></div></div>
   <pre id="log"></pre>
 
+  <details class="diag">
+    <summary>Screenshot / CORS fail ho to yahan dekhein</summary>
+    <div class="row">
+      <button id="open">Playlist naye tab me kholo</button>
+      <button id="srv">Server mode try karo</button>
+    </div>
+    <p class="url" id="url"></p>
+  </details>
+
   <footer>
-    <span id="region"></span>
-    Token sirf aapke browser me rehta hai; server usse sirf player se baat karne
-    ke liye use karta hai. Kuch bhi store nahi hota.
+    Token sirf aapke browser ke memory me rehta hai. Segments seedha player se aate
+    hain, AES-128 decrypt bhi yahin hota hai, MP4 bhi yahin banta hai.
   </footer>
 </div>
 <script>
   fetch('/api/relay').then(r => r.json()).then(j => {
-    document.getElementById('region').textContent =
-      'server region: ' + (j.region || '?') + (j.region === 'bom1' ? ' (Mumbai ✅)' : '');
+    document.getElementById('srv').title = 'server region: ' + (j.region || '?');
   }).catch(() => {});
 </script>
 <script src="/app.js"></script>
