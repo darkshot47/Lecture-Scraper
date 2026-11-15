@@ -90,9 +90,10 @@ public final class Downloader {
                 + "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
 
         stage("playlist laa rahe hain…");
-        Resp master = http(token.videoUrl, cookie, ua);
+        Resp master = fetchPlaylist(token.videoUrl, cookie, ua);
         if (master.status != 200) {
-            throw new Exception("player ne HTTP " + master.status + " diya — network ya link badal ke try karein");
+            throw new Exception("player ne HTTP " + master.status + " diya — network ya link badal ke try karein"
+                    + (master.status == 502 ? " (Cloudflare 502: IP block — \"Page se download\" try karein)" : ""));
         }
         String masterText = master.text == null ? "" : master.text;
 
@@ -109,8 +110,11 @@ public final class Downloader {
                 }
             }
         }
-        Resp media = variantUrl.equals(token.videoUrl) ? master : http(variantUrl, cookie, ua);
-        if (media.status != 200) throw new Exception("media playlist HTTP " + media.status);
+        Resp media = variantUrl.equals(token.videoUrl) ? master : fetchPlaylist(variantUrl, cookie, ua);
+        if (media.status != 200) {
+            throw new Exception("media playlist HTTP " + media.status
+                    + (media.status == 502 ? " — Cloudflare IP block. \"Page se download\" (site ka apna button) use karein." : ""));
+        }
         String mediaText = media.text == null ? "" : media.text;
 
         /* ------- segments ------- */
@@ -249,6 +253,171 @@ public final class Downloader {
         res.file = out;
         res.bytes = written;
         return res;
+    }
+
+
+    /**
+     * Playlist laao. Pehle normal, 502 par "browser mode" — matlab request
+     * WebView ke andar hi jaati hai (wahi context jahan player chalta hai),
+     * wahan se bytes wapas base64 me aate hain.
+     *
+     * KYUN: native 502 Cloudflare ka IP/TLS fingerprint block hai. WebView
+     * ka request asli Chrome jaisa hota hai, isliye wahan se 200 aata hai.
+     */
+    /**
+     * PAGE-SE-DOWNLOAD: playlist/segments/key sab page ke andar se (same origin)
+     * maango — jo browser me chalta hai. Agar WebView page attached hai to yahi
+     * default raasta hai, kyunki native request par Cloudflare 502 de raha hai.
+     */
+    public Result runViaPage(Token token) throws Exception {
+        Result res = new Result();
+        res.title = token.title;
+        res.duration = token.duration;
+
+        if (!BrowserNet.ready()) throw new Exception("page attach nahi hai — pehle page kholo");
+
+        stage("page se playlist laa rahe hain…");
+        Resp master = BrowserNet.getText(token.videoUrl);
+        if (master.status != 200) {
+            throw new Exception("page se bhi playlist HTTP " + master.status
+                    + " — lecture page par play karke dobara try karein");
+        }
+        String masterText = master.text;
+
+        String variantUrl = token.videoUrl;
+        for (String l : masterText.replace("\r", "").split("\n")) {
+            String t = l.trim();
+            if (t.startsWith("#EXT-X-STREAM-INF:")) {
+                // agla line hi variant hai — neeche parse me hi handle ho jayega
+            }
+        }
+        int idx = 0;
+        String[] ml = masterText.replace("\r", "").split("\n");
+        for (int i = 0; i < ml.length; i++) {
+            if (ml[i].trim().startsWith("#EXT-X-STREAM-INF:") && i + 1 < ml.length) {
+                String next = ml[i + 1].trim();
+                if (!next.isEmpty() && !next.startsWith("#")) {
+                    variantUrl = absolutize(token.videoUrl, next);
+                    idx++;
+                }
+            }
+        }
+        Resp media = variantUrl.equals(token.videoUrl) ? master : BrowserNet.getText(variantUrl);
+        if (media.status != 200) throw new Exception("page se media playlist HTTP " + media.status);
+        String mediaText = media.text;
+
+        List<String> segUrls = new ArrayList<>();
+        String keyUri = null, keyIv = null;
+        for (String raw : splitLines(mediaText)) {
+            String l = raw.trim();
+            if (l.isEmpty()) continue;
+            if (l.startsWith("#EXT-X-KEY:")) {
+                String method = m(l, "METHOD=([^,]+)");
+                String uri = m(l, "URI=\"([^\"]+)\"");
+                keyIv = m(l, "IV=0x([0-9a-fA-F]+)");
+                keyUri = uri == null ? null : absolutize(variantUrl, uri);
+                if (method != null && method.equalsIgnoreCase("NONE")) keyUri = null;
+            } else if (!l.startsWith("#")) {
+                segUrls.add(absolutize(variantUrl, l));
+            }
+        }
+        if (segUrls.isEmpty()) throw new Exception("page se playlist mili par segments nahi");
+        res.segments = segUrls.size();
+
+        File dir = new File(ctx.getFilesDir(), CACHE);
+        if (!dir.exists() && !dir.mkdirs()) throw new Exception("cache folder nahi ban paya");
+
+        byte[] key = null;
+        if (keyUri != null) {
+            stage("page se AES key maang rahe hain…");
+            Resp k = BrowserNet.getText(keyUri);
+            if (k.status == 200 && (k.body.length == 16 || k.body.length == 32)) {
+                key = k.body;
+                stage("✓ key mili (page se, " + key.length + " bytes)");
+                try {
+                    write(new File(dir, "hlskey.bin"), key);
+                } catch (Exception ignored) {
+                }
+            } else {
+                res.keyMissing = true;
+                res.keyHost = "page";
+                res.keyDiag.add("page fetch -> HTTP " + k.status + " (" + k.body.length + " bytes)");
+                for (String s : BrowserNet.logLines()) res.keyDiag.add(s);
+                return res;
+            }
+        }
+
+        stage(String.format(Locale.US, "%d segments · page mode", res.segments));
+
+        long totalBytes = 0;
+        int failed = 0;
+        int done = 0;
+        for (int i = 0; i < segUrls.size(); i++) {
+            File segFile = new File(dir, String.format(Locale.US, "seg-%04d.bin", i));
+            File rawFile = new File(dir, String.format(Locale.US, "raw-%04d.bin", i));
+            if (segFile.exists() && segFile.length() > 500) {
+                done++;
+                totalBytes += segFile.length();
+                if (cb != null) cb.onProgress(done, segUrls.size(), totalBytes);
+                continue;
+            }
+            try {
+                byte[] rawData;
+                if (rawFile.exists() && rawFile.length() > 500) {
+                    rawData = readAll(rawFile);
+                } else {
+                    Resp r = BrowserNet.getText(segUrls.get(i));
+                    if (r.status != 200) throw new Exception("seg HTTP " + r.status);
+                    rawData = r.body;
+                    write(rawFile, rawData);
+                }
+                boolean plainTs = rawData.length > 188 && rawData[0] == 0x47;
+                byte[] out = rawData;
+                if (key != null && !plainTs) out = aesDecrypt(key, rawData, ivFor(i, keyIv));
+                write(segFile, out);
+                totalBytes += out.length;
+            } catch (Exception e) {
+                failed++;
+                if (cb != null) cb.onSegmentError(i, e.getMessage() == null ? e.toString() : e.getMessage());
+            }
+            done++;
+            if (cb != null) cb.onProgress(done, segUrls.size(), totalBytes);
+        }
+        res.failed = failed;
+        res.bytes = totalBytes;
+        if (done - failed == 0) throw new Exception("page se ek bhi segment nahi aaya");
+
+        stage("segments jod rahe hain…");
+        File outFile = new File(dir, "lecture.ts");
+        OutputStream os = new FileOutputStream(outFile);
+        long written = 0;
+        for (int i = 0; i < segUrls.size(); i++) {
+            File f = new File(dir, String.format(Locale.US, "seg-%04d.bin", i));
+            if (!f.exists()) continue;
+            InputStream in = new FileInputStream(f);
+            byte[] buf = new byte[1 << 16];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                os.write(buf, 0, n);
+                written += n;
+            }
+            in.close();
+        }
+        os.flush();
+        os.close();
+        res.file = outFile;
+        res.bytes = written;
+        return res;
+    }
+
+    private Resp fetchPlaylist(String url, String cookie, String ua) {
+        Resp r = http(url, cookie, ua);
+        stage("playlist -> HTTP " + r.status);
+        if (r.status == 200 || r.status == 0) return r;
+        Resp viaWeb = BrowserNet.getText(url);
+        stage("browser mode -> HTTP " + viaWeb.status);
+        if (viaWeb.status == 200) return viaWeb;
+        return r;
     }
 
     private void stage(String s) {
@@ -455,10 +624,10 @@ public final class Downloader {
 
     /* ------------------------------------------------------------------ http -- */
 
-    static class Resp {
-        int status;
-        byte[] body;
-        String text;
+    public static class Resp {
+        public int status;
+        public byte[] body = new byte[0];
+        public String text = "";
     }
 
     private Resp http(String url, String cookie, String ua) {

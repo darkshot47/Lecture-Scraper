@@ -82,7 +82,7 @@ jobs:
       - name: Source sanity (native classes)
         run: |
           set -e
-          for f in Token Downloader NetSniffer PlayerActivity SniffActivity MainActivity; do
+          for f in Token Downloader NetSniffer PlayerActivity PageActivity GalleryWriter BrowserNet MainActivity; do
             test -f "android/app/src/main/java/org/studyratna/saver/$f.java" \
               && echo "OK $f.java" || { echo "MISSING $f.java"; exit 1; }
           done

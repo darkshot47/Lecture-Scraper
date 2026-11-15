@@ -39,9 +39,10 @@
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
 
         <activity
-            android:name=".SniffActivity"
+            android:name=".PageActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="false" />
+
 
         <provider
             android:name="androidx.core.content.FileProvider"

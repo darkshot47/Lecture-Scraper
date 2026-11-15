@@ -23,6 +23,9 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.webkit.WebView;
+
+import java.util.Map;
 
 import org.json.JSONObject;
 
@@ -60,6 +63,7 @@ public class MainActivity extends Activity {
     private Button watchBtn;
     private Button saveBtn;
     private Button sniffBtn;
+    private Button pageBtn;
 
     private Token token;
     private Downloader.Result lastResult;
@@ -122,8 +126,13 @@ public class MainActivity extends Activity {
         saveBtn.setOnClickListener(v -> download());
         root.addView(saveBtn);
 
-        sniffBtn = big("⚡ Key sniff (page se headers seekho)", 0xFF6B7280);
-        sniffBtn.setTextSize(13f);
+        pageBtn = big("🌐 Page kholo / page se download", 0xFF6B7280);
+        pageBtn.setTextSize(14f);
+        pageBtn.setOnClickListener(v -> openPage());
+        root.addView(pageBtn);
+
+        sniffBtn = big("⚡ Key sniff (headers copy)", 0xFF9CA3AF);
+        sniffBtn.setTextSize(12f);
         sniffBtn.setOnClickListener(v -> sniff());
         root.addView(sniffBtn);
 
@@ -141,8 +150,17 @@ public class MainActivity extends Activity {
         details.setTextIsSelectable(true);
         root.addView(details);
 
+        // browser-net: ek hidden WebView jo requests asli browser ki tarah bhejta hai
+        // (Cloudflare native ko 502 deta hai, WebView ko nahi)
+        WebView warm = new WebView(this);
+        warm.getSettings().setJavaScriptEnabled(true);
+        warm.getSettings().setDomStorageEnabled(true);
+        warm.addJavascriptInterface(new BrowserNet.Bridge(), "BrowserNetBridge");
+        BrowserNet.attach(warm);
+        warm.loadUrl(DEFAULT_URL);
+
         String incoming = getIntent() != null ? getIntent().getStringExtra("url") : null;
-        urlBox.setText(incoming != null ? incoming : "");
+        urlBox.setText(incoming != null ? incoming : "", TextView.BufferType.EDITABLE);
     }
 
     /* --------------------------------------------------------------- UI bits -- */
@@ -402,8 +420,8 @@ public class MainActivity extends Activity {
         NetSniffer.clear();
         say("page khul raha hai — lecture chalne dein (35s)…");
 
-        Intent i = new Intent(this, SniffActivity.class);
-        i.putExtra(SniffActivity.EXTRA_URL, raw);
+        Intent i = new Intent(this, PageActivity.class);
+        i.putExtra(PageActivity.EXTRA_URL, raw);
         startActivity(i);
         ui.postDelayed(this::sniffReport, 36_000);
     }
@@ -439,8 +457,8 @@ public class MainActivity extends Activity {
 
     private void openPage() {
         String raw = urlBox.getText().toString().trim();
-        Intent i = new Intent(this, SniffActivity.class);
-        i.putExtra(SniffActivity.EXTRA_URL, raw.isEmpty() ? DEFAULT_URL : raw);
+        Intent i = new Intent(this, PageActivity.class);
+        i.putExtra(PageActivity.EXTRA_URL, raw.isEmpty() ? DEFAULT_URL : raw);
         startActivity(i);
     }
 
