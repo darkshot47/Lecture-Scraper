@@ -133,6 +133,7 @@ jobs:
             if [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; then
               echo "region_used=$REG" >> "$GITHUB_OUTPUT"
               echo "ok=true" >> "$GITHUB_OUTPUT"
+              echo "url=https://$(python3 -c "import json;print(json.load(open('/tmp/resp.json')).get('url',''))")" >> "$GITHUB_OUTPUT"
               tail -c 2000 /tmp/resp.json >> "$LOG"
               exit 0
             fi
@@ -147,6 +148,7 @@ jobs:
               echo "HTTP $CODE" | tee -a "$LOG"; head -c 3000 /tmp/resp.json | tee -a "$LOG"; echo | tee -a "$LOG"
               if [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; then
                 echo "region_used=$REG" >> "$GITHUB_OUTPUT"; echo "ok=true" >> "$GITHUB_OUTPUT"
+                echo "url=https://$(python3 -c "import json;print(json.load(open('/tmp/resp.json')).get('url',''))")" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
             fi
@@ -195,34 +197,44 @@ jobs:
           gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" \
             -f body="$(cat /tmp/comment.md)" --jq '.id' || echo "commit comment fail"
 
-      - name: Verify deployed function
+      - name: Verify deployed function (in-region probe)
         if: steps.deploy.outputs.ok == 'true'
-        run: |
-          echo "BASE=$BASE"
-          echo "--- root json (region) ---"
-          curl -sS --max-time 30 "$BASE/api/relay" | tee /tmp/root.json || true
-          echo
-          echo "--- player probe (asli test) ---"
-          if [ -n "$TOK" ]; then
-            curl -sS --max-time 60 "$BASE/api/relay?action=selftest&token=$TOK" | tee /tmp/probe.json || true
-          else
-            echo "(token nahi diya — sirf region check)"
-          fi
-          echo
-          {
-            echo "### Relay deploy"
-            echo ""
-            echo "- URL: $BASE"
-            echo "- region requested: \`${{ steps.deploy.outputs.region_used }}\`"
-            echo ""
-            echo '```json'
-            head -c 2500 /tmp/root.json 2>/dev/null || true
-            echo
-            head -c 2500 /tmp/probe.json 2>/dev/null || true
-            echo '```'
-          } > /tmp/notes.md
-          gh release create "relay-${GITHUB_RUN_ID}" --draft --title "Relay deploy" --notes-file /tmp/notes.md || true
         env:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ steps.deploy.outputs.url }}
           TOK: ${{ inputs.token || github.event.client_payload.token }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          echo "BASE=$BASE"
+          echo "--- function root (region dikhega) ---"
+          curl -sS --max-time 60 "$BASE/api/relay" | tee /tmp/root.json || true
+          echo
+          DEPID=$(python3 -c "import json;print(json.load(open('/tmp/resp.json')).get('id',''))" 2>/dev/null || true)
+          echo "deployment=$DEPID"
+          if [ -n "$DEPID" ]; then
+            echo "--- production alias assign ---"
+            curl -sS --max-time 60 -X POST "https://api.vercel.com/v10/projects/prj_trguyKhBAW4WhH7oAoJiFXVMAzOf/alias" \
+              -H "Authorization: Bearer ${VERCEL_TOKEN}" -H "Content-Type: application/json" \
+              -d "{\"alias\":\"lecture-relay.vercel.app\",\"deploymentId\":\"${DEPID}\"}" | head -c 500 || true
+            echo
+          fi
+          if [ -n "$TOK" ]; then
+            echo "--- ASLI TEST: player probe from India ---"
+            curl -sS --max-time 90 "$BASE/api/relay?action=selftest&token=$TOK" | tee /tmp/probe.json || true
+          else
+            echo "(token nahi diya)"
+          fi
+          echo
+          {
+            echo "### Relay verify — region ${{ steps.deploy.outputs.region_used }}"
+            echo ""
+            echo "- base: $BASE"
+            echo "- alias: https://lecture-relay.vercel.app"
+            echo ""
+            echo '```json'
+            head -c 2000 /tmp/root.json 2>/dev/null || true
+            echo
+            head -c 3000 /tmp/probe.json 2>/dev/null || true
+            echo '```'
+          } > /tmp/v.md
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -f body="$(cat /tmp/v.md)" --jq '.id' || echo "comment fail"
