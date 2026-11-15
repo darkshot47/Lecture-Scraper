@@ -84,12 +84,44 @@ def main() -> int:
     cands = [p["proxy"] for p in pool][:6]
     print(f"[i] proxies: {cands}")
 
+    # segment + key test (agar master mil jaye to)
     for label, target in targets:
         for proxy in [None] + cands:
-            tag = f"{label:14s} via {proxy or 'DIRECT':32s}"
+            for mode, ck in (("nocookie", ""), ("cookie", cookie)) if "cf-" in label else (("nocookie", ""),):
+                tag = f"{label:14s} via {str(proxy or 'DIRECT'):32s} {mode:9s}"
+                res = try_get(target, proxy, ck)
+                print(f"{tag} -> {res.get('status')} {res.get('len', '')} "
+                      f"{res.get('server', '')} {res.get('err', '')}")
+    # agar koi master 200 de, uske segments + key try karo
+    print("\n=== segment/key probe ===")
+    base_ok = None
+    for label, target in targets:
+        for proxy in [None] + cands:
             res = try_get(target, proxy, cookie if "cf-" in label else "")
-            print(f"{tag} -> {res.get('status')} {res.get('len', '')} "
-                  f"{res.get('server', '')} {res.get('err', '')}")
+            if res.get("status") == 200:
+                base_ok = (label, target, proxy, "cf-" in label)
+                break
+        if base_ok:
+            break
+    if not base_ok:
+        print("koi master 200 nahi -> segments test nahi ho sakta")
+        return 0
+    label, target, proxy, is_cf = base_ok
+    print(f"master OK: {label} via {proxy}")
+    import re as _re
+    body = try_get(target, proxy, cookie if is_cf else "")
+    url0 = target.replace("master.m3u8", "hls/720/main.m3u8")
+    for probe_url in (url0,):
+        res = try_get(probe_url, proxy, cookie if is_cf else "")
+        print(f"  media playlist -> {res.get('status')} len={res.get('len')}")
+    if is_cf:
+        key_prefix = target.split("/")[-2]
+        for seg in ("000.ts", "001.ts"):
+            su = target.rsplit("/", 1)[0] + f"/{seg}"
+            r1 = try_get(su, proxy, "")
+            r2 = try_get(su, proxy, cookie)
+            print(f"  {seg}: nocookie={r1.get('status')}/{r1.get('len')} "
+                  f"cookie={r2.get('status')}/{r2.get('len')}")
     return 0
 
 
