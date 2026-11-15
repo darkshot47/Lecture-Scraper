@@ -126,7 +126,13 @@ jobs:
             tail -c 6000 /tmp/deploy.log 2>/dev/null || echo "(deploy.log khali - step shuru hi nahi hua)"
             echo '```'
           } > /tmp/diag.md
-          gh release create "relay-${GITHUB_RUN_ID}" --draft --title "Relay deploy diag (${OK:-false})" --notes-file /tmp/diag.md || true
+          echo "--- diag.md ---"; cat /tmp/diag.md
+          gh release create "relay-${GITHUB_RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --draft \
+            --title "Relay deploy diag (${OK:-false})" \
+            --notes-file /tmp/diag.md || echo "release create fail"
 
       - name: Verify deployed function
         if: steps.deploy.outputs.ok == 'true'
