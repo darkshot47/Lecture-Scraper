@@ -44,7 +44,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install Vercel CLI
         run: npm i -g vercel@latest
@@ -108,7 +108,7 @@ jobs:
                   "installCommand": None,
                   "outputDirectory": None,
                   "rootDirectory": None,
-                  "nodeVersion": "20.x",
+                  "nodeVersion": "26.x",
               },
           }
           json.dump(payload, open("/tmp/payload.json", "w"))
