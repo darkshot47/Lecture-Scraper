@@ -78,29 +78,67 @@ public class PlayerActivity extends Activity {
                 .setConnectTimeoutMs(20000)
                 .setReadTimeoutMs(30000);
 
-        String ck = cookie == null ? "" : cookie;
-        String sniffed = NetSniffer.cookieHeader(url);
-        String allCookies = ck;
-        if (!sniffed.isEmpty()) allCookies = allCookies.isEmpty() ? sniffed : allCookies + "; " + sniffed;
+        // ---- CDN (CloudFront) par jao: Cloudflare 502 yahan nahi lagta ----
+        final String videoKey = Origin.videoKey(url);
+        String cdn = Origin.cdnUrl(url);
+        String playUrl = url;
+        String cdnCookie = "";
+
+        if (cdn != null) {
+            cdnCookie = Origin.cookieFor(cookie == null ? "" : cookie, url, cdn);
+            // CDN reachable hai? (HEAD) — nahi to player URL
+            if (Origin.hasCloudFrontCookie(cdnCookie)) {
+                playUrl = cdn;
+            }
+            fail.setText("CDN: " + (playUrl.equals(cdn) ? "CloudFront ✓" : "player (fallback)"));
+        }
+        final String fPlayUrl = playUrl;
+
+        String allCookies = cdnCookie.isEmpty()
+                ? Origin.cookieFor(cookie == null ? "" : cookie, url)
+                : cdnCookie;
         if (!allCookies.isEmpty()) {
             http.setDefaultRequestProperties(java.util.Collections.singletonMap("Cookie", allCookies));
         }
+        fail.setVisibility(TextView.GONE);
 
         MediaSource src = new HlsMediaSource.Factory(http)
                 .setAllowChunklessPreparation(true)
-                .createMediaSource(MediaItem.fromUri(url));
+                .createMediaSource(MediaItem.fromUri(fPlayUrl));
 
         player.setMediaSource(src);
         player.prepare();
         player.setPlayWhenReady(true);
 
         player.addListener(new androidx.media3.common.Player.Listener() {
+            private boolean retried = false;
+
             @Override
             public void onPlayerError(androidx.media3.common.PlaybackException error) {
                 fail.setVisibility(TextView.VISIBLE);
+                // CDN fail -> player URL par ek retry (aur ulta)
+                if (!retried) {
+                    retried = true;
+                    String other = fPlayUrl.equals(url) ? (cdn == null ? url : cdn) : url;
+                    String c = Origin.cookieFor(cookie == null ? "" : cookie, other);
+                    DefaultHttpDataSource.Factory h2 = new DefaultHttpDataSource.Factory()
+                            .setUserAgent("Mozilla/5.0 (Linux; Android 13) LectureSaver/2.2")
+                            .setAllowCrossProtocolRedirects(true);
+                    if (!c.isEmpty()) {
+                        h2.setDefaultRequestProperties(java.util.Collections.singletonMap("Cookie", c));
+                    }
+                    fail.setText("pehla raasta fail (" + error.getErrorCodeName()
+                            + "), doosra try: " + Origin.host(other));
+                    player.setMediaSource(new HlsMediaSource.Factory(h2)
+                            .createMediaSource(MediaItem.fromUri(other)));
+                    player.prepare();
+                    player.setPlayWhenReady(true);
+                    return;
+                }
                 fail.setText("playback error: " + error.getErrorCodeName()
                         + "\n" + (error.getMessage() == null ? "" : error.getMessage())
-                        + "\n\nApp me 'Download' se file bana ke offline chala sakte hain.");
+                        + "\n\nTry: 1) 'Page kholo' (WebView me player)  2) REC na chale to 'Page se download'"
+                        + "\nCDN: " + Origin.host(fPlayUrl));
             }
         });
     }

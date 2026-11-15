@@ -89,15 +89,38 @@ public final class Downloader {
         String ua = "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 "
                 + "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
 
-        stage("playlist laa rahe hain…");
-        Resp master = fetchPlaylist(token.videoUrl, cookie, ua);
+        // ---- CDN first: Cloudflare (player.studyratna.org) ko avoid karo ----
+        final String videoKey = Origin.videoKey(token.videoUrl);
+        final String cdnMaster = Origin.cdnUrl(token.videoUrl);
+        // cookie jar: token ki cookie + WebView ke asli cookies
+        String fullCookie = Origin.cookieFor(cookie, token.videoUrl, cdnMaster);
+        if (!Origin.hasCloudFrontCookie(fullCookie)) {
+            stage("⚠ CloudFront cookie nahi mili — link adhoora ho sakta hai");
+        }
+
+        stage("CDN se playlist laa rahe hain…");
+        Resp master = null;
+        String masterUrlUsed = null;
+        if (cdnMaster != null) {
+            Resp cd = http(cdnMaster, fullCookie, ua);
+            stage("CDN master -> HTTP " + cd.status + explain(cd.status));
+            if (cd.status == 200) {
+                master = cd;
+                masterUrlUsed = cdnMaster;
+            }
+        }
+        if (master == null) {
+            // fallback: player URL (Cloudflare) -> native -> browser mode
+            master = fetchPlaylist(token.videoUrl, fullCookie, ua);
+            masterUrlUsed = token.videoUrl;
+        }
         if (master.status != 200) {
             throw new Exception("player ne HTTP " + master.status + " diya — network ya link badal ke try karein"
                     + (master.status == 502 ? " (Cloudflare 502: IP block — \"Page se download\" try karein)" : ""));
         }
         String masterText = master.text == null ? "" : master.text;
 
-        String variantUrl = token.videoUrl;
+        String variantUrl = masterUrlUsed;
         String best = "";
         List<String> lines = splitLines(masterText);
         for (int i = 0; i < lines.size(); i++) {
@@ -105,12 +128,18 @@ public final class Downloader {
             if (l.startsWith("#EXT-X-STREAM-INF:")) {
                 String next = i + 1 < lines.size() ? lines.get(i + 1).trim() : "";
                 if (!next.isEmpty() && !next.startsWith("#")) {
-                    variantUrl = absolutize(token.videoUrl, next);
+                    variantUrl = absolutize(masterUrlUsed, next);
                     best = (m(l, "RESOLUTION=([0-9x]+)") + " ").trim();
                 }
             }
         }
-        Resp media = variantUrl.equals(token.videoUrl) ? master : fetchPlaylist(variantUrl, cookie, ua);
+        // variant bhi CDN par le jao
+        String cdnVariant = Origin.toCdn(variantUrl, videoKey);
+        if (cdnVariant != null && !cdnVariant.equals(variantUrl)) {
+            Resp cv = http(cdnVariant, fullCookie, ua);
+            if (cv.status == 200) variantUrl = cdnVariant;
+        }
+        Resp media = variantUrl.equals(masterUrlUsed) ? master : fetchPlaylist(variantUrl, fullCookie, ua);
         if (media.status != 200) {
             throw new Exception("media playlist HTTP " + media.status
                     + (media.status == 502 ? " — Cloudflare IP block. \"Page se download\" (site ka apna button) use karein." : ""));
@@ -132,11 +161,16 @@ public final class Downloader {
                 String uri = m(l, "URI=\"([^\"]+)\"");
                 keyIv = m(l, "IV=0x([0-9a-fA-F]+)");
                 keyUri = uri == null ? null : absolutize(variantUrl, uri);
+                if (keyUri != null && Origin.isCdn(keyUri)) {
+                    // CDN par hi key hai to Cloudflare API ko chhod do
+                    keyUri = Origin.toCdn(keyUri, videoKey);
+                }
                 if (method != null && method.equalsIgnoreCase("NONE")) keyUri = null;
             } else if (l.startsWith("#EXTINF:")) {
                 dur = num(l.substring(8).split(",")[0]);
             } else if (!l.startsWith("#")) {
-                segUrls.add(absolutize(variantUrl, l));
+                String abs = absolutize(variantUrl, l);
+                segUrls.add(videoKey == null ? abs : Origin.toCdn(abs, videoKey));
             }
         }
         int total = segUrls.size();
@@ -449,6 +483,8 @@ public final class Downloader {
      *   3. sab fail -> null (caller "key nahi mili" bolta hai)
      */
     private synchronized byte[] getKey(String uri, String cookie, String ua, byte[] probe, byte[] iv) {
+        // cookie jar: CloudFront/host cookies is request ke liye
+        cookie = Origin.cookieFor(cookie, uri);
         byte[] memo = keyMemo.get(uri);
         if (memo != null) return memo;
 
@@ -546,6 +582,14 @@ public final class Downloader {
     private List<String> keyUrlShapes(String keyUri) {
         List<String> out = new ArrayList<>();
         out.add(keyUri);
+        // CDN par hi key ho sakti hai (Cloudflare API bypass)
+        try {
+            String vk = Origin.videoKey(keyUri);
+            String cdn = Origin.toCdn(keyUri, vk);
+            if (cdn != null && !cdn.equals(keyUri)) out.add(cdn);
+            if (vk != null) out.add("https://d1d34p8vz63oiq.cloudfront.net/" + vk + "/enc.key");
+        } catch (Exception ignored) {
+        }
         String videoKey = "?";
         try {
             URL u = new URL(keyUri);

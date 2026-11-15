@@ -116,6 +116,84 @@
     return btoa(bin);
   }
 
+  /**
+   * AUDIO fallback: kuch WebView me video frames black aate hain par audio
+   * track zinda rehta hai. Tab bhi lecture kaam ka hai — audio save karo.
+   */
+  function startAudioOnly() {
+    var v = pickVideo();
+    if (!v || !v.captureStream) return false;
+    try {
+      var st = v.captureStream(1);
+      var at = st.getAudioTracks();
+      if (!at.length) { log("audio track nahi"); return false; }
+      var mime = "audio/webm";
+      try { if (MediaRecorder.isTypeSupported("audio/mp4")) mime = "audio/mp4"; } catch (e) {}
+      var rec = new MediaRecorder(new MediaStream(at), { mimeType: mime, audioBitsPerSecond: 128000 });
+      rec.ondataavailable = function (e) {
+        if (!e.data || !e.data.size) return;
+        S.chunks++;
+        var fr = new FileReader();
+        fr.onloadend = function () {
+          var b64 = String(fr.result).split(",")[1] || "";
+          if (!b64) return;
+          S.bytes += e.data.size;
+          send({ type: "rec", b64: b64, mime: mime, bytes: S.bytes, done: rec.state === "inactive" });
+        };
+        fr.readAsDataURL(e.data);
+      };
+      rec.onstop = function () {
+        S.running = false;
+        if (!S.finished) {
+          S.finished = true;
+          send({ type: "rec-done", ok: S.bytes > 50000, bytes: S.bytes, mime: mime });
+        }
+      };
+      rec.start(CFG.chunkMs);
+      S.rec = rec;
+      S.mime = mime;
+      S.kind = "audio";
+      S.running = true;
+      S.mode = "audio";
+      S.duration = isFinite(v.duration) ? v.duration : 0;
+      log("AUDIO mode (" + mime + ")");
+      return true;
+    } catch (e) {
+      log("audio fail: " + e);
+      return false;
+    }
+  }
+
+  /** video ki asli state — black screen ka pata lagane ke liye */
+  window.__lsProbe = function () {
+    var v = pickVideo();
+    if (!v) return JSON.stringify({ video: false });
+    var cs = false, at = 0, vt = 0;
+    try {
+      if (v.captureStream) {
+        var st = v.captureStream(1);
+        cs = true;
+        at = st.getAudioTracks().length;
+        vt = st.getVideoTracks().length;
+      }
+    } catch (e) {}
+    return JSON.stringify({
+      video: true,
+      w: v.videoWidth || 0,
+      h: v.videoHeight || 0,
+      ready: v.readyState,
+      paused: v.paused,
+      t: v.currentTime || 0,
+      dur: isFinite(v.duration) ? v.duration : 0,
+      hasCaptureStream: !!v.captureStream,
+      audioTracks: at,
+      videoTracks: vt,
+      mse: !!window.MediaSource,
+      canHls: !!v.canPlayType && !!v.canPlayType("application/vnd.apple.mpegurl"),
+      src: (v.currentSrc || v.src || "").slice(0, 90)
+    });
+  };
+
   function startRecorder() {
     if (S.rec) return true;
     var v = pickVideo();
@@ -213,6 +291,12 @@
       if (opts.bitsPerSec) CFG.bitsPerSec = opts.bitsPerSec;
     }
     if (!startRecorder()) {
+      if (startAudioOnly()) {
+        var vv = pickVideo();
+        try { if (vv) { vv.muted = true; var pp = vv.play(); if (pp && pp.catch) pp.catch(function () {}); } } catch (e) {}
+        setTimeout(drive, 900);
+        return 2;
+      }
       // captureStream nahi -> MSE copy par fallback (sirf wahi jo ab tak chal chuka)
       S.mode = "mse";
       S.duration = 0;
