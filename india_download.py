@@ -204,6 +204,52 @@ def manifest_refresh(info: dict, proxy: str | None) -> tuple[str | None, str | N
 # main
 # ---------------------------------------------------------------------------
 
+def probe_playlist(url: str, proxy: str | None, cookie: str, timeout: int = 25) -> int | str:
+    """Player host par playlist ka status. 200 = yeh proxy stream de sakta hai."""
+    px = {"http": proxy, "https": proxy} if proxy else {}
+    headers = {"User-Agent": UA, "Referer": "https://app.studyratna.org/",
+               "Origin": "https://app.studyratna.org"}
+    if cookie:
+        headers["Cookie"] = cookie
+    try:
+        import requests
+        r = requests.get(url, headers=headers, proxies=px, timeout=timeout)
+        return r.status_code
+    except Exception as exc:
+        return f"ERR:{type(exc).__name__}"
+
+
+def rank_proxies_for_stream(pool: list[dict], url: str, cookie: str,
+                            max_tries: int = 8, log=log) -> list[dict]:
+    """Sirf wahi proxies rakho jo player host se playlist 200 laate hain.
+
+    Live sniff se pata chala: CloudFront 403 deta hai (cookie ke saath bhi), par
+    player.studyratna.org India proxy se 200 deta hai. Isliye proxy selection ka
+    asli test playlist 200 hai - app.studyratna.org ka 200 kaafi nahi.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    cands = [p for p in pool if p.get("host_ok")][:max_tries] or pool[:max_tries]
+    if not cands:
+        return []
+    media_url = url.replace("master.m3u8", "hls/720/main.m3u8") if "master.m3u8" in url else url
+    log(f"[geo] {len(cands)} proxies ko playlist 200 ke liye test kar rahe hain…")
+    with ThreadPoolExecutor(max_workers=min(8, len(cands))) as ex:
+        codes = list(ex.map(lambda p: probe_playlist(media_url, p["proxy"], cookie), cands))
+    ranked: list[dict] = []
+    for item, code in zip(cands, codes):
+        item = dict(item)
+        item["playlist"] = code
+        log(f"[geo]   {item['proxy']:32s} playlist={code}")
+        if code == 200:
+            ranked.append(item)
+    if ranked:
+        log(f"[geo] {len(ranked)} proxy(s) playlist 200 de rahe hain ✅")
+    else:
+        log("[geo] koi proxy playlist 200 nahi de raha ❌ (player host block)")
+    return ranked
+
+
 def build_sessions(pool: list[dict], cookie: str, max_tries: int = 6,
                    log=log) -> list[HlsSession]:
     sessions: list[HlsSession] = []
@@ -223,6 +269,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default=os.environ.get("TARGET_URL", ""))
     ap.add_argument("--no-proxy", action="store_true")
+    ap.add_argument("--only-proxies", default="",
+                    help="comma separated extra proxies, e.g. http://1.2.3.4:80")
     ap.add_argument("--min-mb", type=float, default=0.5)
     args = ap.parse_args()
 
@@ -253,6 +301,13 @@ def main() -> int:
         else:
             note("!! koi IN proxy nahi mila - direct try karenge (403 expected).")
 
+    if args.only_proxies:
+        extra = []
+        for px in [p.strip() for p in args.only_proxies.split(",") if p.strip()]:
+            extra.append({"proxy": px, "host_ok": True, "isp": "cli"})
+        pool = extra + [p for p in pool if p["proxy"] not in {e["proxy"] for e in extra}]
+        note(f"CLI proxies add kiye: {[e['proxy'] for e in extra]}")
+
     cookie = info.get("cookie") or ""
     streams: list[tuple[str, dict, str]] = []
     token_url = info.get("videoUrl")
@@ -271,6 +326,12 @@ def main() -> int:
         note("Token me videoUrl nahi aur manifest refresh bhi fail - rukna pad raha hai.")
         write_report("FAIL", "no stream URL available")
         return 4
+
+    # playlist-200 wale proxies pehle (yeh asli test hai)
+    if not args.no_proxy:
+        working = rank_proxies_for_stream(pool, streams[0][0], cookie, log=log)
+        if working:
+            pool = working + [p for p in pool if p not in working]
 
     # 3) HLS via proxies, best pehle
     expect = int(args.min_mb * 1024 * 1024)
