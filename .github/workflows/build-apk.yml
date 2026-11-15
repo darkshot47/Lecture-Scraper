@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   apk:
@@ -91,11 +92,36 @@ jobs:
 
       - name: Assemble debug APK
         working-directory: android
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleDebug --no-daemon 2>&1 | tee /tmp/build.log
+          grep -E "^e: |error: |FAILURE:" /tmp/build.log | head -60 || true
 
       - name: Assemble release APK (debug-signed)
         working-directory: android
-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleRelease --no-daemon 2>&1 | tee /tmp/build-rel.log
+          grep -E "^e: |error: |FAILURE:" /tmp/build-rel.log | head -60 || true
+
+      - name: Report compile errors (agar fail hue)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Build fail — ${{ github.run_id }} (${{ github.sha }})"
+            echo
+            echo '```'
+            grep -E "^e: |error: |What went wrong|FAILURE:|Caused by" /tmp/build.log /tmp/build-rel.log 2>/dev/null | head -80 || echo "(no compiler lines found)"
+            echo '```'
+            echo
+            echo "Tail:"
+            echo '```'
+            tail -40 /tmp/build.log 2>/dev/null || true
+            echo '```'
+          } > /tmp/err.md
+          gh issue create --title "APK build fail (${{ github.run_id }})" --body-file /tmp/err.md || true
 
       - name: Verify APK contents
         id: verify
