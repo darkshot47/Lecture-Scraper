@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lecture → MP4 · local</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">▶</div>
+    <div>
+      <h1>Lecture → MP4</h1>
+      <p class="sub">Ye <b>aapke PC par</b> chal raha hai. Playlist aur segments local relay
+      maangta hai (server-side) — isliye na CORS ka rok, na datacenter block.
+      Token aapke PC se bahar nahi jaata.</p>
+    </div>
+  </header>
+
+  <label for="tok">Lecture link ya playerToken</label>
+  <textarea id="tok" spellcheck="false"
+    placeholder="https://app.studyratna.org/?playerToken=...   (ya sirf token)"></textarea>
+
+  <div class="row">
+    <button id="insp">1 · Token check</button>
+    <button id="test">2 · Player test</button>
+    <button id="dl" class="primary">3 · MP4 download</button>
+  </div>
+
+  <div class="progress"><div id="bar"></div></div>
+  <pre id="log"></pre>
+
+  <details class="diag">
+    <summary>Kuch galat ho to yahan dekhein</summary>
+    <div class="row">
+      <button id="open">Playlist directly check karo</button>
+    </div>
+    <p class="url" id="url"></p>
+  </details>
+
+  <footer>
+    <code>node localrelay.mjs</code> se chalta hai · koi npm install nahi · sab kuch
+    localhost par. Band karne ke liye Ctrl+C.
+  </footer>
+</div>
+<script>
+  fetch('/api?action=none').then(r => r.json()).then(j => {
+    if (j.mode) document.title = 'Lecture → MP4 · local';
+  }).catch(() => {});
+</script>
+<script src="/app.js"></script>
+</body>
+</html>
