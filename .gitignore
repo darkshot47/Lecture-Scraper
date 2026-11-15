@@ -19,3 +19,5 @@ node_modules/
 
 # local test venvs
 .venv*/
+web/node_modules/
+.tmp/
