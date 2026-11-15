@@ -10,6 +10,8 @@ on:
         description: "lecture URL (playerToken)"
         required: true
         type: string
+  repository_dispatch:
+    types: [browser-probe]
   push:
     paths:
       - "browser_probe.py"
@@ -19,7 +21,7 @@ permissions:
   contents: write
 
 env:
-  TARGET_URL: ${{ inputs.target_url }}
+  TARGET_URL: ${{ inputs.target_url || github.event.client_payload.url }}
 
 jobs:
   probe:
