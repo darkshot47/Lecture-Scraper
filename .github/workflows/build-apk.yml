@@ -116,9 +116,10 @@ jobs:
           while IFS= read -r line; do
             N=$((N+1))
             # har line apna tag: pure ASCII, koi & / ? nahi
-            SLUG=$(printf '%s' "$line" | tr -cd 'A-Za-z0-9 .:_,[-]' | tr -s ' ' '.' | cut -c1-90)
+            # poora diag line: sirf alnum + dash (100 chars) — tag me koi galat char na aaye
+            SLUG=$(printf '%s' "$line" | tr -cd 'A-Za-z0-9' | tail -c 100)
             gh release create "e$N-43707173372-$SLUG" --title "err $N: ${{ github.run_id }}" \
-              --notes "log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
+              --notes "log: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
           done < /tmp/lines.txt
           echo "posted $N error lines"
 
