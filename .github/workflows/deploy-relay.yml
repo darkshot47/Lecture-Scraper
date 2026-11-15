@@ -77,6 +77,10 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
+          LOG=/tmp/deploy.log
+          : > "$LOG"
+          show() { tee -a "$LOG"; }
+          exec > >(show) 2>&1
           REQ="${{ inputs.region || github.event.client_payload.region || 'auto' }}"
           if [ "$REQ" = "auto" ]; then REGIONS="bom1 iad1"; else REGIONS="$REQ"; fi
           for REG in $REGIONS; do
@@ -103,6 +107,26 @@ jobs:
           echo "ok=false" >> "$GITHUB_OUTPUT"
           echo "::error::koi bhi region me deploy nahi hua"
           exit 1
+
+      - name: Publish deploy diagnostics
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OK: ${{ steps.deploy.outputs.ok }}
+          REGION: ${{ steps.deploy.outputs.region_used }}
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          {
+            echo "### Deploy relay — result: **${OK:-false}**"
+            echo ""
+            echo "- region: \`${REGION:-n/a}\`"
+            echo "- url: ${URL:-n/a}"
+            echo ""
+            echo '```'
+            tail -c 6000 /tmp/deploy.log 2>/dev/null || echo "(deploy.log khali - step shuru hi nahi hua)"
+            echo '```'
+          } > /tmp/diag.md
+          gh release create "relay-${GITHUB_RUN_ID}" --draft --title "Relay deploy diag (${OK:-false})" --notes-file /tmp/diag.md || true
 
       - name: Verify deployed function
         if: steps.deploy.outputs.ok == 'true'
