@@ -138,12 +138,16 @@ jobs:
             echo "$B64"
             echo "\`\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          gh release create "relay-${GITHUB_RUN_ID}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --target "${GITHUB_SHA}" \
-            --draft \
-            --title "Relay deploy diag (${OK:-false})" \
-            --notes-file /tmp/diag.md || echo "release create fail"
+          # Releases yahan se readable nahi hote; commit comment pe padi jaati hai.
+          {
+            echo "**Relay deploy diag** — result: ${OK:-false}"
+            echo ""
+            echo '```'
+            tail -c 20000 /tmp/deploy.log 2>/dev/null || echo "(deploy.log khali)"
+            echo '```'
+          } > /tmp/comment.md
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" \
+            -f body="$(cat /tmp/comment.md)" --jq '.id' || echo "commit comment fail"
 
       - name: Verify deployed function
         if: steps.deploy.outputs.ok == 'true'
