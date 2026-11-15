@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
     private Button saveBtn;
     private Button sniffBtn;
     private Button pageBtn;
+    private Button recBtn;
 
     private Token token;
     private Downloader.Result lastResult;
@@ -125,6 +126,11 @@ public class MainActivity extends Activity {
         saveBtn = big("⬇  Download (Gallery me save)", 0xFF059669);
         saveBtn.setOnClickListener(v -> download());
         root.addView(saveBtn);
+
+        recBtn = big("⏺ Record (page me jo chal raha hai)", 0xFFDC2626);
+        recBtn.setTextSize(15f);
+        recBtn.setOnClickListener(v -> openPage());
+        root.addView(recBtn);
 
         pageBtn = big("🌐 Page kholo / page se download", 0xFF6B7280);
         pageBtn.setTextSize(14f);

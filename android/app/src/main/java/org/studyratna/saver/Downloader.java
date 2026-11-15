@@ -412,12 +412,22 @@ public final class Downloader {
 
     private Resp fetchPlaylist(String url, String cookie, String ua) {
         Resp r = http(url, cookie, ua);
-        stage("playlist -> HTTP " + r.status);
+        stage("playlist -> HTTP " + r.status + explain(r.status));
         if (r.status == 200 || r.status == 0) return r;
         Resp viaWeb = BrowserNet.getText(url);
-        stage("browser mode -> HTTP " + viaWeb.status);
+        stage("browser mode -> HTTP " + viaWeb.status + explain(viaWeb.status));
         if (viaWeb.status == 200) return viaWeb;
         return r;
+    }
+
+
+    /** Status code ko insaan ki bhasha me. */
+    static String explain(int status) {
+        if (status == 0) return " (network/CORS block — request page ke andar se bhejni padegi)";
+        if (status == 502 || status == 503) return " (Cloudflare IP block)";
+        if (status == 401 || status == 403) return " (key/session auth)";
+        if (status == 404) return " (URL galat ya CDN edge badal gaya)";
+        return "";
     }
 
     private void stage(String s) {
