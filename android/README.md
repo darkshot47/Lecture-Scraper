@@ -30,7 +30,7 @@ link paste
    │                    raw-NNNN.bin cache (encrypted) → key → seg-NNNN.bin
    │                    join → lecture.ts → MediaStore (Gallery)
    │
-   └── "Key sniff" ► SniffActivity (WebView)
+   └── "Page kholo" ► PageActivity (WebView)
                         page normal chalta hai; har request ke headers NetSniffer
                         record karta hai — Referer, Origin, Cookie, Authorization,
                         client-id… Wahi headers downloader "sniffed" variant me use karta hai.
@@ -62,7 +62,9 @@ Local build ke liye: `cd android && gradle wrapper && ./gradlew :app:assembleDeb
 | `Token.java` | playerToken decrypt (URL / bare token / %3A / quoted — sab) |
 | `Downloader.java` | HLS + AES-128 native download, multi-worker, resume, join |
 | `NetSniffer.java` | WebView requests se headers/cookies ikattha karna |
-| `SniffActivity.java` | WebView recorder page (page normal chalta hai + capture JS) |
+| `PageActivity.java` | Page WebView: page ke andar download, site ka download button (blob:/data:/http), headers copy |
+| `BrowserNet.java` | requests WebView ke andar bhejna (native 502 ko bypass) |
+| `GalleryWriter.java` | bytes -> Gallery (MediaStore) |
 | `PlayerActivity.java` | ExoPlayer se direct playback |
 | `assets/inject_webview.js` | MSE/MediaRecorder capture (backup raasta) |
 
