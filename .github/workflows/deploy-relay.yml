@@ -127,6 +127,17 @@ jobs:
             echo '```'
           } > /tmp/diag.md
           echo "--- diag.md ---"; cat /tmp/diag.md
+          # Job summary API se padi ja sakti hai (step logs nahi). Chhota rakho.
+          B64=$(base64 -w0 /tmp/deploy.log 2>/dev/null | tail -c 60000)
+          {
+            echo "## Deploy relay — ${OK:-false}"
+            echo ""
+            echo "- region: \`${REGION:-n/a}\` / url: ${URL:-n/a}"
+            echo ""
+            echo "\`\`\`\`"
+            echo "$B64"
+            echo "\`\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
           gh release create "relay-${GITHUB_RUN_ID}" \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
