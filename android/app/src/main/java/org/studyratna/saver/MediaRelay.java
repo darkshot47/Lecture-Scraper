@@ -124,28 +124,34 @@ public final class MediaRelay {
         }
         say("master mila (" + master.body.length + " B)");
 
-        // 2) variant
-        String variant = null;
-        String[] lines = master.text.replace("\r", "").split("\n");
-        for (int i = 0; i < lines.length; i++) {
-            if (lines[i].trim().startsWith("#EXT-X-STREAM-INF:") && i + 1 < lines.length) {
-                String n = lines[i + 1].trim();
-                if (!n.isEmpty() && !n.startsWith("#")) variant = abs(videoUrl, n);
+        // 2) saare variants — 720 par 502 ho to 480/360 par dekhna (server-side
+        //    transcode ho sakta hai; ek quality zinda ho to kaam ho jayega)
+        List<String> variants = new ArrayList<>();
+        String[] ls = master.text.replace("\r", "").split("\n");
+        for (int i = 0; i < ls.length; i++) {
+            if (ls[i].trim().startsWith("#EXT-X-STREAM-INF:") && i + 1 < ls.length) {
+                String n = ls[i + 1].trim();
+                if (!n.isEmpty() && !n.startsWith("#")) variants.add(abs(videoUrl, n));
             }
         }
-        String mediaUrl = variant == null ? videoUrl : variant;
-        Downloader.Resp media = fetchBest(mediaUrl, true);
-        if (media.status != 200 && variant != null) {
-            // kuch CDNs variant ko sirf origin se dete hain
-            Downloader.Resp alt = fetchBest(videoUrl, true);
-            if (alt.status == 200) media = alt;
+        if (variants.isEmpty()) variants.add(videoUrl);
+
+        Downloader.Resp media = null;
+        String mediaUrl = null;
+        for (String v : variants) {
+            Downloader.Resp r = fetchBest(v, true);
+            if (r.status == 200 && r.text.contains("#EXTINF")) {
+                media = r;
+                mediaUrl = v;
+                break;
+            }
+            say("  variant fail: " + v.substring(Math.max(0, v.lastIndexOf("/hls/"))) + " -> " + r.status);
         }
-        if (media.status != 200 || !media.text.contains("#EXTINF")) {
-            say("media fail: HTTP " + media.status
-                    + " (relay ke liye zaroori hai — WebView se bhi nahi aaya)");
+        if (media == null) {
+            say("media fail: sab variants 502 (WebView/docnav se bhi nahi aaya)");
             return false;
         }
-        say("media mila (" + media.body.length + " B)");
+        say("media mila (" + media.body.length + " B) — " + mediaUrl);
         variantUrl = mediaUrl;
         mediaBase = mediaUrl;
 
