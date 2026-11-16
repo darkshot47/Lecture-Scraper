@@ -42,16 +42,16 @@ public final class MediaRelay {
     private final String videoKey;
     private final Log log;
 
-    private ServerSocket server;
+    private volatile ServerSocket server;
     private Thread thread;
     private volatile boolean running = false;
 
-    private int port = 0;
-    private String variantUrl;      // variant playlist ka asli URL (WebView se mila)
-    private String mediaBase;       // variant URL ka base (relative segments ke liye)
-    private List<String> segmentUrls = new ArrayList<>();
-    private String keyUrl;
-    private String keyIv;
+    private volatile int port = 0;
+    private volatile String variantUrl;      // variant playlist ka asli URL (WebView se mila)
+    private volatile String mediaBase;       // variant URL ka base (relative segments ke liye)
+    private volatile List<String> segmentUrls = new ArrayList<>();
+    private volatile String keyUrl;
+    private volatile String keyIv;
 
     public MediaRelay(String videoUrl, String cookie, Log log) {
         this.videoUrl = videoUrl;
@@ -331,13 +331,18 @@ public final class MediaRelay {
         for (String c : cands) {
             if (SameOrigin.ready()) {
                 Downloader.Resp s = SameOrigin.get(c, cookie, 15000);
-                if (s.status == 200 && s.body.length >= 16) return s.body;
+                if (s.status == 200 && keyOk(s.body)) return s.body;
             }
             Http.Res r = Http.okhttpOnly(c, cookie, null);
-            if (r.status == 200 && r.body.length >= 16) return r.body;
+            if (r.status == 200 && keyOk(r.body)) return r.body;
         }
         say("key fail: " + keyUrl);
         return null;
+    }
+
+    /** AES-128/192/256 key hi valid (16/24/32 B). 200 me galat body bhi aa sakti hai. */
+    private static boolean keyOk(byte[] k) {
+        return k != null && (k.length == 16 || k.length == 24 || k.length == 32);
     }
 
     private static int parseInt(String s) {

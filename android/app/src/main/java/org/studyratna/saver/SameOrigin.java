@@ -69,7 +69,27 @@ public final class SameOrigin {
             cm.setAcceptCookie(true);
             cm.setAcceptThirdPartyCookies(web, true);
             web.addJavascriptInterface(new Bridge(), "SameOriginBridge");
+            web.setWebViewClient(new android.webkit.WebViewClient() {
+                @Override
+                public void onPageFinished(WebView v, String url) {
+                    runPending(v);
+                }
+            });
         });
+    }
+
+    private static volatile String pendingJs;
+
+    /** Page load khatam hone par JS chalao (andhe timer ki jagah). */
+    private static void runPending(WebView w) {
+        String js = pendingJs;
+        if (js == null) return;
+        pendingJs = null;
+        try {
+            w.evaluateJavascript(js, null);
+        } catch (Throwable t) {
+            finish(0, "eval fail: " + t);
+        }
     }
 
     public static boolean ready() {
@@ -82,7 +102,15 @@ public final class SameOrigin {
      * target URL ko uske hi origin ke document se fetch karo.
      * Blocking (background thread se bulao).
      */
+    private static final Object LOCK = new Object();
+
     public static Downloader.Resp get(String targetUrl, String cookie, int timeoutMs) {
+        synchronized (LOCK) {   // WebView ek hi hai — ek time par ek fetch
+            return getLocked(targetUrl, cookie, timeoutMs);
+        }
+    }
+
+    private static Downloader.Resp getLocked(String targetUrl, String cookie, int timeoutMs) {
         final Blocking box = new Blocking();
         fetch(targetUrl, cookie, (status, body, text, note) -> {
             box.status = status;
@@ -179,12 +207,9 @@ public final class SameOrigin {
                             + "   .catch(function(e){fail(0,(e&&e.message)||e);});"
                             + "}catch(e){fail(0,e);}"
                             + "})();";
-                    try {
-                        w.evaluateJavascript(js, null);
-                    } catch (Throwable t) {
-                        finish(0, "eval fail: " + t);
-                    }
-                }, 450);
+                    pendingJs = js;
+                    runPending(w);   // onPageFinished pehle aa gaya to turant
+                }, 900);            // warna 900ms baad (fallback)
             } catch (Throwable t) {
                 finish(0, "load fail: " + t);
             }
@@ -203,7 +228,8 @@ public final class SameOrigin {
                 cm.setCookie(origin, p + "; Path=/");
                 // CloudFront cookie .cloudfront.net domain ke liye bhi
                 if (p.startsWith("CloudFront-")) {
-                    cm.setCookie("https://d1d34p8vz63oiq.cloudfront.net", p + "; Path=/");
+                    String cdn = Origin.cdnHostFromCookie(cookie);
+                    if (cdn != null) cm.setCookie("https://" + cdn, p + "; Path=/");
                 }
             }
             cm.flush();
