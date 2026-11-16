@@ -151,9 +151,33 @@ public final class Downloader {
             if (cv.status == 200) variantUrl = cdnVariant;
         }
         Resp media = variantUrl.equals(masterUrlUsed) ? master : fetchPlaylist(variantUrl, fullCookie, ua);
+
+        // 720 fail ho jaye to baaki qualities (480/360) — koi ek zinda ho to kaam
+        if (media.status != 200) {
+            List<String> all = new ArrayList<>();
+            for (int i = 0; i < lines.size(); i++) {
+                if (lines.get(i).trim().startsWith("#EXT-X-STREAM-INF:")) {
+                    String next = i + 1 < lines.size() ? lines.get(i + 1).trim() : "";
+                    if (!next.isEmpty() && !next.startsWith("#")) {
+                        all.add(absolutize(masterUrlUsed, next));
+                    }
+                }
+            }
+            for (String v : all) {
+                if (v.equals(variantUrl)) continue;
+                stage("720 nahi mila, try: " + v.substring(v.lastIndexOf("/hls/")));
+                Resp r2 = fetchPlaylist(v, fullCookie, ua);
+                if (r2.status == 200 && r2.text != null && r2.text.contains("#EXTINF")) {
+                    media = r2;
+                    variantUrl = v;
+                    break;
+                }
+                stage("  -> HTTP " + r2.status);
+            }
+        }
         if (media.status != 200) {
             throw new Exception("media playlist HTTP " + media.status
-                    + (media.status == 502 ? " — Cloudflare IP block. \"Page se download\" (site ka apna button) use karein." : ""));
+                    + " — master 200 de raha hai par variant 502; qualities bhi fail. Probe ka body bhejein.");
         }
         String mediaText = media.text == null ? "" : media.text;
 
@@ -456,6 +480,18 @@ public final class Downloader {
     }
 
     private Resp fetchPlaylist(String url, String cookie, String ua) {
+        // docnav: asli page jaisi navigation — probe me master isse 200 deta hai
+        if (DocFetch.ready()) {
+            DocFetch.Res d = DocFetch.get(url, cookie, 25000);
+            if (d.ok()) {
+                Resp out = new Resp();
+                out.status = d.status;
+                out.body = d.body;
+                out.text = d.text;
+                return out;
+            }
+            stage("docnav " + Origin.host(url) + " -> HTTP " + d.status);
+        }
         Resp r = http(url, cookie, ua);
         stage("playlist -> HTTP " + r.status + explain(r.status));
         if (r.status == 200 || r.status == 0) return r;

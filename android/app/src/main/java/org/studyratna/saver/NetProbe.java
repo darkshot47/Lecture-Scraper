@@ -26,11 +26,12 @@ public final class NetProbe {
         public int bytes;
         public String note = "";
         public String preview = "";   // body ka nichod — asli wajah yahan hoti hai
+        public String server = "";    // server / cf-ray — edge ya origin kaun hai
 
         public String line() {
             if (preview != null && !preview.isEmpty()) {
-                return String.format(java.util.Locale.US, "%-6s %-9s %-8s -> %3d  %6d B %s%n        | %s",
-                        what, variant, transport, status, bytes, note, preview);
+                return String.format(java.util.Locale.US, "%-6s %-9s %-8s -> %3d  %6d B %s %s%n        | %s",
+                        what, variant, transport, status, bytes, note, server, preview);
             }
             return String.format(java.util.Locale.US, "%-6s %-9s %-8s -> %3d  %6d B %s",
                     what, variant, transport, status, bytes, note);
@@ -94,22 +95,41 @@ public final class NetProbe {
             }
             if (variantRel != null) {
                 String mediaPlayer = abs(t.videoUrl, variantRel);
-                String mediaCdn = videoKey == null ? null
-                        : Origin.toCdn(mediaPlayer, videoKey);
-                add(out, sink, "media", "player", "okhttp", Http.okhttpOnly(mediaPlayer, jar, null));
-                if (SameOrigin.ready()) {
-                    add(out, sink, "media", "player", "sameorg", Http.sameOriginOnly(mediaPlayer, jar));
+
+                // saare qualities (720/480/360) — shayad sirf ek hi 502 de
+                List<String> allVariants = new ArrayList<>();
+                for (int i = 0; i < lines.length; i++) {
+                    if (lines[i].trim().startsWith("#EXT-X-STREAM-INF:") && i + 1 < lines.length) {
+                        String n = lines[i + 1].trim();
+                        if (!n.isEmpty() && !n.startsWith("#")) allVariants.add(abs(t.videoUrl, n));
+                    }
                 }
-                if (DocFetch.ready()) {
-                    addDoc(out, sink, "media", "player", DocFetch.get(mediaPlayer, jar, 25000));
+                for (String v : (allVariants.isEmpty()
+                        ? java.util.Collections.singletonList(mediaPlayer) : allVariants)) {
+                    String q = v.contains("/hls/") ? v.substring(v.lastIndexOf("/hls/") + 5) : v;
+                    int slash = q.indexOf('/');
+                    if (slash > 0) q = q.substring(0, slash);
+                    add(out, sink, "media", q, "sameorg", Http.sameOriginOnly(v, jar));
+                    addDoc(out, sink, "media", q, DocFetch.get(v, jar, 25000));
+                    add(out, sink, "media", q, "okhttp", Http.okhttpOnly(v, jar, null));
                 }
+
+                String mediaCdn = videoKey == null ? null : Origin.toCdn(mediaPlayer, videoKey);
                 if (mediaCdn != null && !mediaCdn.equals(mediaPlayer)) {
                     add(out, sink, "media", "cdn", "okhttp", Http.okhttpOnly(mediaCdn, jar, null));
                 }
 
                 // ek media playlist se seg0 + key
-                Http.Res mp = Http.okhttpOnly(mediaCdn != null ? mediaCdn : mediaPlayer, jar, null);
-                if (mp.status != 200) mp = Http.okhttpOnly(mediaPlayer, jar, null);
+                Http.Res mp = Http.okhttpOnly(mediaPlayer, jar, null);
+                if (mp.status != 200) {
+                    DocFetch.Res md = DocFetch.get(mediaPlayer, jar, 25000);
+                    if (md.ok()) {
+                        mp = new Http.Res();
+                        mp.status = md.status;
+                        mp.body = md.body;
+                        mp.text = md.text;
+                    }
+                }
                 if (mp.status == 200) {
                     String mediaBase = (mediaCdn != null && mp.text != null) ? mediaCdn : mediaPlayer;
                     String keyUri = null;
@@ -176,6 +196,7 @@ public final class NetProbe {
         row.status = d.status;
         row.bytes = d.body == null ? 0 : d.body.length;
         row.preview = preview(d.text, d.status);
+        row.server = serverOf(d.headers);
         if (d.note != null && !d.note.isEmpty()) {
             row.note = d.note.substring(0, Math.min(28, d.note.length()));
         }
@@ -192,14 +213,32 @@ public final class NetProbe {
         row.status = r.status;
         row.bytes = r.body == null ? 0 : r.body.length;
         row.preview = preview(r.text, r.status);
+        row.server = serverOf(r.headers);
         if (r.error != null && !r.error.isEmpty()) row.note = r.error.substring(0, Math.min(28, r.error.length()));
         out.add(row);
         if (sink != null) sink.onRow(row);
     }
 
+    /** 502/403 kisne diya — Cloudflare edge (cf-ray) ya origin (server). */
+    private static String serverOf(Map<String, String> h) {
+        if (h == null || h.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (String k : new String[]{"server", "cf-ray", "cf-cache-status", "x-served-by",
+                "x-cache", "via", "x-powered-by"}) {
+            for (Map.Entry<String, String> e : h.entrySet()) {
+                if (e.getKey() != null && e.getKey().equalsIgnoreCase(k)) {
+                    sb.append(k).append("=").append(e.getValue()).append(" ");
+                }
+            }
+        }
+        String out = sb.toString().trim();
+        return out.length() > 90 ? out.substring(0, 90) : out;
+    }
+
     /**
-     * Body ka nichod. 502 ka jawab yahin chhupa hota hai (6458 B me), aur master
-     * (494 B) me asli variant URL. Inhe padhe bina koi fix guess hi hoga.
+     * Body ka nichod. 502 ka jawab body ke ANDAR hota hai — par HTML ke head me
+     * (Cloudflare ka boilerplate) nahi, uske aage. Isliye pehle <title>/<h1> aur
+     * "cloudflare"/"worker"/"error code" wali line dhoondte hain, tab status line.
      */
     private static String preview(String text, int status) {
         if (text == null || text.isEmpty()) return "";
@@ -210,18 +249,42 @@ public final class NetProbe {
                     String l = raw.trim();
                     if (l.startsWith("#EXT-X-STREAM-INF:") || l.startsWith("#EXT-X-KEY:")
                             || (!l.isEmpty() && !l.startsWith("#"))) {
-                        sb.append(l.length() > 110 ? l.substring(0, 110) : l).append(" | ");
-                        if (sb.length() > 300) break;
+                        // variant line: sirf resolution + path (poora URL base alag)
+                        String one = l.replace("BANDWIDTH=", "").replace("RESOLUTION=", "");
+                        sb.append(one.length() > 100 ? one.substring(0, 100) : one).append(" | ");
+                        if (sb.length() > 260) break;
                     }
                 }
                 return sb.length() == 0 ? "(m3u8, koi variant line nahi)" : sb.toString();
             }
+            String flat = text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ');
+
             if (status >= 400) {
-                String t = text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
-                return t.length() > 260 ? t.substring(0, 260) : t;
+                // 1) Cloudflare/edge ke asli markers
+                for (String key : new String[]{"<title>", "Error code", "error code", "error_code",
+                        "Ray ID", "ray_id", "cloudflare", "Cloudflare", "worker", "origin",
+                        "Web server is", "Bad gateway", "AccessDenied", "Access denied"}) {
+                    int i = flat.indexOf(key);
+                    if (i >= 0) {
+                        int a = Math.max(0, i - 60);
+                        int b = Math.min(flat.length(), i + 170);
+                        return flat.substring(a, b).trim();
+                    }
+                }
+                // 2) <h1>/<h2> ka text
+                int h = flat.indexOf("<h1");
+                if (h < 0) h = flat.indexOf("<h2");
+                if (h >= 0) {
+                    int b = Math.min(flat.length(), h + 200);
+                    return flat.substring(h, b).trim();
+                }
+                // 3) kuch bhi na mile to aage ka hissa (head skip)
+                int from = Math.min(flat.length(), Math.max(600, flat.length() / 3));
+                return flat.substring(from, Math.min(flat.length(), from + 240)).trim();
             }
-            String t = text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
-            return t.length() > 120 ? t.substring(0, 120) : t;
+
+            String t = flat.trim();
+            return t.length() > 140 ? t.substring(0, 140) : t;
         } catch (Exception e) {
             return "";
         }
