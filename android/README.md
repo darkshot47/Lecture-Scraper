@@ -14,6 +14,28 @@ APK: **Actions → Build Android APK** wale run ka release, ya seedha
 Phone par: APK download → "Install unknown apps" allow → install.
 Release APK debug-signed hai (sideload ke liye theek, Play Store ke liye nahi).
 
+## Relay + same-origin (502/CORS ka permanent jugad)
+
+Network probe ka data:
+```
+master player okhttp -> 200      media player okhttp -> 502
+master cdn    okhttp -> 403      media cdn    okhttp -> 403
+```
+Matlab IP block nahi — **request ka origin/roop** issue hai, aur CDN host galat tha.
+Isliye 2 naye raaste:
+
+**1. `SameOrigin.java`** — WebView me `loadDataWithBaseURL("https://player.studyratna.org/", …)`
+se **us origin ka page** bana ke `fetch()` karta hai → **same-origin, no CORS**, aur
+bytes WebView ke apne network stack se (jise site par 200 milta hai).
+
+**2. `MediaRelay.java`** — app ke andar `127.0.0.1` par chhota HLS server jo playlist
+rewrite karta hai (`/seg/N`, `/key.bin`). ExoPlayer `http://127.0.0.1:PORT/index.m3u8`
+chalata hai — koi Cloudflare nahi, koi CORS nahi. Segments/key ke liye har baar
+same-origin → okhttp → CDN try hota hai.
+
+Ye "jugad" hai jo dono ko ek saath kaatta hai: request player host ki hai (WebView se),
+aur player ko diya jaane wala playlist hamare control me hai.
+
 ## CDN bypass (502 ka ilaaj)
 
 `player.studyratna.org` Cloudflare par hai -> native/WebView fetch par **502**.

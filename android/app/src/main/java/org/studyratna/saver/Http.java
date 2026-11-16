@@ -75,17 +75,53 @@ public final class Http {
 
     /** Default: OkHttp, phir HttpURLConnection. BrowserNet caller khud kare. */
     public static Res get(String url, String cookie, Map<String, String> extra) {
+        // 1) SAME-ORIGIN WebView: us origin ka page bana ke fetch (CORS + 502 dono ka
+        //    ilaaj, kyunki bytes WebView ke apne network stack se aate hain)
+        if (SameOrigin.ready()) {
+            Downloader.Resp so = SameOrigin.get(url, cookie, 25000);
+            if (so.status == 200 || so.status == 206) {
+                Res r = new Res();
+                r.status = so.status;
+                r.body = so.body;
+                r.text = so.text;
+                r.route = "same-origin/" + Origin.host(url) + "/" + so.status;
+                lastRoute = r.route;
+                return r;
+            }
+            // same-origin fail -> usi ka status yaad rakho diagnostics ke liye
+            lastRoute = "same-origin/" + Origin.host(url) + "/" + so.status;
+        }
+
+        // 2) okhttp (HTTP/1.1 + Chrome headers)
         Res ok = okhttp(url, cookie, extra, "GET");
         if (ok.status == 200 || ok.status == 206) return ok;
+
+        // 3) purana JDK raasta
         Res jdk = jdk(url, cookie, extra);
         if (jdk.status == 200 || jdk.status == 206) return jdk;
-        // dono fail — jo behtar status de wahi lautao (diagnostics ke liye)
         return ok.status != 0 ? ok : jdk;
     }
 
     /** OkHttp only (player / segments ke liye). */
     public static Res okhttpOnly(String url, String cookie, Map<String, String> extra) {
         return okhttp(url, cookie, extra, "GET");
+    }
+
+    /** Sirf same-origin WebView (probe ke liye). */
+    public static Res sameOriginOnly(String url, String cookie) {
+        Res r = new Res();
+        r.route = "same-origin";
+        if (!SameOrigin.ready()) {
+            r.status = -1;
+            r.error = "not attached";
+            return r;
+        }
+        Downloader.Resp so = SameOrigin.get(url, cookie, 25000);
+        r.status = so.status;
+        r.body = so.body;
+        r.text = so.text;
+        r.route = "same-origin/" + Origin.host(url) + "/" + so.status;
+        return r;
     }
 
     /** HEAD — reachability check (CDN zinda hai ya nahi). */

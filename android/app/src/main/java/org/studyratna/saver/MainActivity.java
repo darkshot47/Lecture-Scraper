@@ -170,6 +170,8 @@ public class MainActivity extends Activity {
         warm.addJavascriptInterface(new BrowserNet.Bridge(), "BrowserNetBridge");
         BrowserNet.attach(warm);
         warm.loadUrl(DEFAULT_URL);
+        // same-origin transport (WebView ka apna network stack)
+        SameOrigin.attach(new WebView(this));
 
         String incoming = getIntent() != null ? getIntent().getStringExtra("url") : null;
         urlBox.setText(incoming != null ? incoming : "", TextView.BufferType.EDITABLE);

@@ -84,35 +84,97 @@ public class PlayerActivity extends Activity {
                 .setUserAgent(Http.UA)
                 .setDefaultRequestProperties(chromeHeaders());
 
-        // ---- CDN (CloudFront) par jao: Cloudflare 502 yahan nahi lagta ----
-        final String videoKey = Origin.videoKey(url);
-        String cdn = Origin.cdnUrl(url);
-        String playUrl = url;
-        String cdnCookie = "";
+        final String tokenCookie = cookie == null ? "" : cookie;
+        final TextView failView = fail;
 
-        if (cdn != null) {
-            cdnCookie = Origin.cookieFor(cookie == null ? "" : cookie, url, cdn);
-            // CDN reachable hai? (HEAD) — nahi to player URL
-            if (Origin.hasCloudFrontCookie(cdnCookie)) {
-                playUrl = cdn;
-            }
-            fail.setText("CDN: " + (playUrl.equals(cdn) ? "CloudFront ✓" : "player (fallback)"));
-        }
-        final String fPlayUrl = playUrl;
+        // ---- MEDIA RELAY: apna localhost HLS (Cloudflare/CORS dono se bacho) ----
+        final MediaRelay[] relay = new MediaRelay[1];
+        new Thread(() -> {
+            MediaRelay r = new MediaRelay(url, tokenCookie, line -> runOnUiThread(() ->
+                    failView.setText("relay: " + line)));
+            boolean ok = r.start();
+            relay[0] = ok ? r : null;
+            final String playUrl = ok ? r.localUrl() : null;
+            runOnUiThread(() -> {
+                if (playUrl != null) {
+                    playFrom(playUrl, "", "relay");
+                } else {
+                    playFromCdn(url, tokenCookie);
+                }
+            });
+        }, "relay-start").start();
 
-        String allCookies = cdnCookie.isEmpty()
-                ? Origin.cookieFor(cookie == null ? "" : cookie, url)
-                : cdnCookie;
-        if (!allCookies.isEmpty()) {
-            http.setDefaultRequestProperties(java.util.Collections.singletonMap("Cookie", allCookies));
+        if (true) return;
+    }
+
+    /** Relay URL (localhost) se playback — koi header nahi chahiye. */
+    private void playFrom(String playUrl, String cookieHeader, String tag) {
+        if (player != null) {
+            player.release();
         }
-        fail.setVisibility(TextView.GONE);
+        player = new ExoPlayer.Builder(this).build();
+        view.setPlayer(player);
+
+        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
+                .setUserAgent(Http.UA)
+                .setAllowCrossProtocolRedirects(true)
+                .setConnectTimeoutMs(15000)
+                .setReadTimeoutMs(30000);
+        if (cookieHeader != null && !cookieHeader.isEmpty()) {
+            http.setDefaultRequestProperties(
+                    java.util.Collections.singletonMap("Cookie", cookieHeader));
+        }
 
         MediaSource src = new HlsMediaSource.Factory(http)
-                .setAllowChunklessPreparation(true)
-                .createMediaSource(MediaItem.fromUri(fPlayUrl));
-
+                .setAllowChunklessPreparation(false)
+                .createMediaSource(MediaItem.fromUri(playUrl));
         player.setMediaSource(src);
+        player.prepare();
+        player.setPlayWhenReady(true);
+        fail.setVisibility(TextView.GONE);
+        fail.setText(tag + ": " + playUrl);
+        player.addListener(new androidx.media3.common.Player.Listener() {
+            @Override
+            public void onPlayerError(androidx.media3.common.PlaybackException error) {
+                fail.setVisibility(TextView.VISIBLE);
+                fail.setText("playback error (" + tag + "): " + error.getErrorCodeName()
+                        + "\n" + (error.getMessage() == null ? "" : error.getMessage()));
+            }
+        });
+    }
+
+    /** CDN/player direct (fallback jab relay fail ho). */
+    private void playFromCdn(String url, String cookie) {
+        final String videoKey = Origin.videoKey(url);
+        String cdn = Origin.cdnUrlFrom(url, cookie);
+        if (cdn == null) cdn = Origin.cdnUrl(url);
+        String jar = Origin.cookieFor(cookie == null ? "" : cookie, url, cdn);
+
+        if (player != null) player.release();
+        player = new ExoPlayer.Builder(this).build();
+        view.setPlayer(player);
+
+        final okhttp3.OkHttpClient ok = new okhttp3.OkHttpClient.Builder()
+                .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(40, java.util.concurrent.TimeUnit.SECONDS)
+                .followRedirects(true)
+                .protocols(java.util.Collections.singletonList(okhttp3.Protocol.HTTP_1_1))
+                .build();
+
+        OkHttpDataSource.Factory http = new OkHttpDataSource.Factory(ok)
+                .setUserAgent(Http.UA)
+                .setDefaultRequestProperties(chromeHeaders());
+        if (!jar.isEmpty()) {
+            java.util.Map<String, String> h = chromeHeaders();
+            h.put("Cookie", jar);
+            http.setDefaultRequestProperties(h);
+        }
+
+        final String primary = cdn != null ? cdn : url;
+        final String secondary = url;
+
+        player.setMediaSource(new HlsMediaSource.Factory(http)
+                .createMediaSource(MediaItem.fromUri(primary)));
         player.prepare();
         player.setPlayWhenReady(true);
 
@@ -122,29 +184,19 @@ public class PlayerActivity extends Activity {
             @Override
             public void onPlayerError(androidx.media3.common.PlaybackException error) {
                 fail.setVisibility(TextView.VISIBLE);
-                // CDN fail -> player URL par ek retry (aur ulta)
                 if (!retried) {
                     retried = true;
-                    String other = fPlayUrl.equals(url) ? (cdn == null ? url : cdn) : url;
-                    String c = Origin.cookieFor(cookie == null ? "" : cookie, other);
-                    OkHttpDataSource.Factory h2 = new OkHttpDataSource.Factory(ok)
-                            .setUserAgent(Http.UA)
-                            .setDefaultRequestProperties(chromeHeaders());
-                    if (!c.isEmpty()) {
-                        h2.setDefaultRequestProperties(java.util.Collections.singletonMap("Cookie", c));
-                    }
                     fail.setText("pehla raasta fail (" + error.getErrorCodeName()
-                            + "), doosra try: " + Origin.host(other));
-                    player.setMediaSource(new HlsMediaSource.Factory(h2)
-                            .createMediaSource(MediaItem.fromUri(other)));
+                            + "), doosra try: " + Origin.host(secondary));
+                    player.setMediaSource(new HlsMediaSource.Factory(http)
+                            .createMediaSource(MediaItem.fromUri(secondary)));
                     player.prepare();
                     player.setPlayWhenReady(true);
                     return;
                 }
                 fail.setText("playback error: " + error.getErrorCodeName()
                         + "\n" + (error.getMessage() == null ? "" : error.getMessage())
-                        + "\n\nTry: 1) 'Page kholo' (WebView me player)  2) REC na chale to 'Page se download'"
-                        + "\nCDN: " + Origin.host(fPlayUrl));
+                        + "\n\nPage/REC try karein — relay bhi fail hua.");
             }
         });
     }
