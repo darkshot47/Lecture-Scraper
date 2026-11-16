@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MediaRelay 127.0.0.1 par plain HTTP serve karta hai. Android 9+ par cleartext
+     block hota hai -> player ko playlist mil jaati hai par segments/key kabhi nahi
+     -> kaala screen. Isliye loopback explicitly allow. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">localhost</domain>
+    </domain-config>
+</network-security-config>
