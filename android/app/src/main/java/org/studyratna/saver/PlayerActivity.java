@@ -36,6 +36,7 @@ public class PlayerActivity extends Activity {
 
     private ExoPlayer player;
     private PlayerView view;
+    private TextView fail;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -52,7 +53,7 @@ public class PlayerActivity extends Activity {
         root.addView(view, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        TextView fail = new TextView(this);
+        fail = new TextView(this);
         fail.setTextColor(0xFFFF6B6B);
         fail.setTextSize(13f);
         fail.setPadding(24, 24, 24, 24);
@@ -126,7 +127,6 @@ public class PlayerActivity extends Activity {
         }
 
         MediaSource src = new HlsMediaSource.Factory(http)
-                .setAllowChunklessPreparation(false)
                 .createMediaSource(MediaItem.fromUri(playUrl));
         player.setMediaSource(src);
         player.prepare();
