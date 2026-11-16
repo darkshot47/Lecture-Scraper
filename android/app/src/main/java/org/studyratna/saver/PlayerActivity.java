@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.ViewGroup;
+import android.webkit.WebView;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -65,6 +66,12 @@ public class PlayerActivity extends Activity {
 
         setContentView(root);
 
+        // relay ke same-origin fetch ke liye apna chhupa WebView (1x1)
+        WebView soView = new WebView(this);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(1, 1);
+        root.addView(soView, lp);
+        SameOrigin.attach(soView);
+
         if (url == null || url.isEmpty()) {
             toast("video URL nahi mila");
             finish();
@@ -89,13 +96,12 @@ public class PlayerActivity extends Activity {
         final TextView failView = fail;
 
         // ---- MEDIA RELAY: apna localhost HLS (Cloudflare/CORS dono se bacho) ----
-        final MediaRelay[] relay = new MediaRelay[1];
         new Thread(() -> {
             MediaRelay r = new MediaRelay(url, tokenCookie, line -> runOnUiThread(() ->
                     failView.setText("relay: " + line)));
-            boolean ok = r.start();
-            relay[0] = ok ? r : null;
-            final String playUrl = ok ? r.localUrl() : null;
+            boolean up = r.start();
+            relayRef = up ? r : null;
+            final String playUrl = up ? r.localUrl() : null;
             runOnUiThread(() -> {
                 if (playUrl != null) {
                     playFrom(playUrl, "", "relay");
@@ -227,8 +233,14 @@ public class PlayerActivity extends Activity {
         if (player != null) player.pause();
     }
 
+    private MediaRelay relayRef;
+
     @Override
     protected void onDestroy() {
+        if (relayRef != null) {
+            relayRef.stop();
+            relayRef = null;
+        }
         if (player != null) {
             player.release();
             player = null;
