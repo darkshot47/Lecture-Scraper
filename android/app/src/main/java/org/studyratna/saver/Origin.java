@@ -64,6 +64,19 @@ public final class Origin {
      * Shape: https://player.studyratna.org/stream/<videoKey>/master.m3u8
      *   ->   https://d1d34p8vz63oiq.cloudfront.net/<videoKey>/master.m3u8
      */
+    public static String cdnUrlFrom(String videoUrl, String cookie) {
+        String base = cdnBase(cookie);
+        String u = cdnUrl(videoUrl);
+        if (u == null) return null;
+        try {
+            java.net.URL a = new java.net.URL(u);
+            java.net.URL b = new java.net.URL(base);
+            return base + a.getPath() + (a.getQuery() == null ? "" : "?" + a.getQuery());
+        } catch (Exception e) {
+            return u;
+        }
+    }
+
     public static String cdnUrl(String videoUrl) {
         try {
             URL u = new URL(videoUrl);
@@ -97,6 +110,28 @@ public final class Origin {
      * Playlist / segment URL ko CDN par le jao (agar host Cloudflare hai).
      * Agar already CDN par hai to waisa hi.
      */
+    public static String toCdnOn(String url, String videoKey, String base) {
+        if (url == null) return null;
+        if (base == null) return toCdn(url, videoKey);
+        try {
+            java.net.URL u = new java.net.URL(url);
+            String h = u.getHost().toLowerCase(Locale.US);
+            if (h.contains("cloudfront")) {
+                // host badalna hai (cookie kis host ke liye signed hai)
+                return base + u.getPath() + (u.getQuery() == null ? "" : "?" + u.getQuery());
+            }
+            if (!h.contains("studyratna") && !h.contains("penpencil")) return url;
+            if (videoKey == null) return url;
+            String path = u.getPath();
+            int i = path.indexOf("stream/" + videoKey);
+            if (i >= 0) path = path.substring(i + ("stream/" + videoKey).length());
+            if (path.startsWith("/")) path = path.substring(1);
+            return base + "/" + videoKey + "/" + path;
+        } catch (Exception e) {
+            return url;
+        }
+    }
+
     public static String toCdn(String url, String videoKey) {
         if (url == null) return null;
         if (isCdn(url)) return url;
@@ -127,6 +162,49 @@ public final class Origin {
         } catch (Exception ignored) {
         }
         return null;
+    }
+
+    /**
+     * CloudFront cookie ke andar asli resource ka host hota hai:
+     *   CloudFront-Policy -> base64 JSON {"Statement":[{"Resource":"https://d111....cloudfront.net/..."}]}
+     * Isse **exact CDN host** nikalta hai — guess karne ki zaroorat nahi.
+     */
+    public static String cdnHostFromCookie(String cookie) {
+        if (cookie == null) return null;
+        try {
+            for (String pair : cookie.split(";")) {
+                String p = pair.trim();
+                int i = p.indexOf('=');
+                if (i < 0) continue;
+                String name = p.substring(0, i).trim();
+                String val = p.substring(i + 1).trim();
+                if (!name.startsWith("CloudFront-")) continue;
+                // value URL-encoded base64 JSON hoti hai
+                String decoded = null;
+                try {
+                    decoded = new String(android.util.Base64.decode(
+                            android.net.Uri.decode(val), android.util.Base64.DEFAULT),
+                            java.nio.charset.StandardCharsets.UTF_8);
+                } catch (Exception e) {
+                    decoded = val;
+                }
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("https?://([a-z0-9.-]+cloudfront\\.net)").matcher(decoded);
+                if (m.find()) return m.group(1);
+                // kuch policies me sirf domain
+                java.util.regex.Matcher m2 = java.util.regex.Pattern
+                        .compile("([a-z0-9-]+\\.cloudfront\\.net)").matcher(val);
+                if (m2.find()) return m2.group(1);
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** Cookie se mila CDN host, warna default. */
+    public static String cdnBase(String cookie) {
+        String h = cdnHostFromCookie(cookie);
+        return h == null ? "https://d1d34p8vz63oiq.cloudfront.net" : "https://" + h;
     }
 
     /** Sab CDN hosts jo try karne hain (fallback ke liye). */

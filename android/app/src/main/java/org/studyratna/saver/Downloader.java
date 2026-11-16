@@ -110,6 +110,17 @@ public final class Downloader {
             }
         }
         if (master == null) {
+            // relay: WebView/same-origin se playlist nikaalne ki koshish
+            if (SameOrigin.ready()) {
+                Downloader.Resp so = SameOrigin.get(token.videoUrl, fullCookie, 25000);
+                stage("same-origin master -> HTTP " + so.status);
+                if (so.status == 200) {
+                    master = so;
+                    masterUrlUsed = token.videoUrl;
+                }
+            }
+        }
+        if (master == null) {
             // fallback: player URL (Cloudflare) -> native -> browser mode
             master = fetchPlaylist(token.videoUrl, fullCookie, ua);
             masterUrlUsed = token.videoUrl;

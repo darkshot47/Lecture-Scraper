@@ -231,6 +231,13 @@ public class PageActivity extends Activity {
         });
 
         BrowserNet.attach(web);
+
+        // same-origin helper: hidden WebView, us origin ka page bana ke fetch
+        WebView soView = new WebView(this);
+        soView.setLayoutParams(new FrameLayout.LayoutParams(1, 1));
+        root.addView(soView);
+        SameOrigin.attach(soView);
+
         web.loadUrl(url);
         ui.postDelayed(tickRunnable, 1200);
     }

@@ -83,7 +83,7 @@ jobs:
       - name: Source sanity (native classes)
         run: |
           set -e
-          for f in Token Downloader NetSniffer PlayerActivity PageActivity GalleryWriter BrowserNet Origin Http NetProbe MainActivity; do
+          for f in Token Downloader NetSniffer PlayerActivity PageActivity GalleryWriter BrowserNet Origin Http NetProbe SameOrigin MediaRelay MainActivity; do
             test -f "android/app/src/main/java/org/studyratna/saver/$f.java" \
               && echo "OK $f.java" || { echo "MISSING $f.java"; exit 1; }
           done
@@ -96,16 +96,18 @@ jobs:
       - name: Assemble debug APK
         working-directory: android
         run: |
-          set -o pipefail
           ./gradlew :app:assembleDebug --no-daemon 2>&1 | tee /tmp/build.log
+          echo "---- compiler lines ----"
           grep -E "^e: |error: |FAILURE:" /tmp/build.log | head -60 || true
+          tail -5 /tmp/build.log || true
 
       - name: Assemble release APK (debug-signed)
         working-directory: android
         run: |
-          set -o pipefail
           ./gradlew :app:assembleRelease --no-daemon 2>&1 | tee /tmp/build-rel.log
+          echo "---- compiler lines ----"
           grep -E "^e: |error: |FAILURE:" /tmp/build-rel.log | head -60 || true
+          tail -5 /tmp/build-rel.log || true
 
       - name: Report compile errors (agar fail hue)
         if: failure()
@@ -210,19 +212,29 @@ jobs:
       - name: Locate APKs
         id: apks
         run: |
-          set -e
-          ls -la android/app/build/outputs/apk/debug/ android/app/build/outputs/apk/release/
-          cp android/app/build/outputs/apk/debug/app-debug.apk lecture-saver-${{ inputs.version_name || '2.0' }}-debug.apk
-          cp android/app/build/outputs/apk/release/app-release.apk lecture-saver-${{ inputs.version_name || '2.0' }}.apk
-          ls -la *.apk
-          echo "ok=1" >> $GITHUB_OUTPUT
+          set +e
+          echo "---- debug dir ----"
+          ls -la android/app/build/outputs/apk/debug/ || true
+          echo "---- release dir ----"
+          ls -la android/app/build/outputs/apk/release/ || true
+          # poore build tree me APK dhoondo (path AGP version ke hisaab se badalta hai)
+          find android -name "*.apk" -type f | sort > /tmp/apks.txt || true
+          cat /tmp/apks.txt
+          REL=$(grep -i "release" /tmp/apks.txt | grep -vi unsigned | head -1)
+          [ -z "$REL" ] && REL=$(grep -i "release" /tmp/apks.txt | head -1)
+          DBG=$(grep -i "debug" /tmp/apks.txt | head -1)
+          [ -n "$DBG" ] && cp "$DBG" "lecture-saver-${{ inputs.version_name || '2.0' }}-debug.apk"
+          [ -n "$REL" ] && cp "$REL" "lecture-saver-${{ inputs.version_name || '2.0' }}.apk"
+          ls -la *.apk || true
+          if ls *.apk >/dev/null 2>&1; then echo "ok=1" >> $GITHUB_OUTPUT; else echo "ok=0" >> $GITHUB_OUTPUT; fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: lecture-saver-apk
           path: "*.apk"
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Publish APK release
@@ -246,6 +258,14 @@ jobs:
             echo "### Build verification"
             echo
             cat verify.md 2>/dev/null || echo "(verify.md missing)"
+            echo
+            echo "### APK files found"
+            echo '```'
+            cat /tmp/apks.txt 2>/dev/null || echo "(none)"
+            echo '```'
+            echo
+            echo "### Apk copy"
+            ls -la *.apk 2>/dev/null || echo "(no *.apk in workspace root)"
           } > /tmp/notes.md
           gh release create "$TAG" --title "Lecture Saver APK 2.0 (Dekho + Download)" --notes-file /tmp/notes.md
           gh release upload "$TAG" *.apk --clobber

@@ -56,6 +56,9 @@ public final class NetProbe {
         for (Map.Entry<String, String> u : urls.entrySet()) {
             add(out, sink, "master", u.getKey(), "okhttp", Http.okhttpOnly(u.getValue(), jar, null));
             add(out, sink, "master", u.getKey(), "jdk", Http.get(u.getValue(), jar, null));
+            if (SameOrigin.ready()) {
+                add(out, sink, "master", u.getKey(), "sameorg", Http.sameOriginOnly(u.getValue(), jar));
+            }
         }
 
         // --- media playlist + segment + key (jo master se mile) ---
@@ -85,6 +88,9 @@ public final class NetProbe {
                 String mediaCdn = videoKey == null ? null
                         : Origin.toCdn(mediaPlayer, videoKey);
                 add(out, sink, "media", "player", "okhttp", Http.okhttpOnly(mediaPlayer, jar, null));
+                if (SameOrigin.ready()) {
+                    add(out, sink, "media", "player", "sameorg", Http.sameOriginOnly(mediaPlayer, jar));
+                }
                 if (mediaCdn != null && !mediaCdn.equals(mediaPlayer)) {
                     add(out, sink, "media", "cdn", "okhttp", Http.okhttpOnly(mediaCdn, jar, null));
                 }
