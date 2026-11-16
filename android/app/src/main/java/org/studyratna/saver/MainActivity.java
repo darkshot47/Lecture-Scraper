@@ -172,6 +172,7 @@ public class MainActivity extends Activity {
         warm.loadUrl(DEFAULT_URL);
         // same-origin transport (WebView ka apna network stack)
         SameOrigin.attach(new WebView(this));
+        DocFetch.attach(new WebView(this));
 
         String incoming = getIntent() != null ? getIntent().getStringExtra("url") : null;
         urlBox.setText(incoming != null ? incoming : "", TextView.BufferType.EDITABLE);

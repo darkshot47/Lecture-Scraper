@@ -25,8 +25,13 @@ public final class NetProbe {
         public int status;
         public int bytes;
         public String note = "";
+        public String preview = "";   // body ka nichod — asli wajah yahan hoti hai
 
         public String line() {
+            if (preview != null && !preview.isEmpty()) {
+                return String.format(java.util.Locale.US, "%-6s %-9s %-8s -> %3d  %6d B %s%n        | %s",
+                        what, variant, transport, status, bytes, note, preview);
+            }
             return String.format(java.util.Locale.US, "%-6s %-9s %-8s -> %3d  %6d B %s",
                     what, variant, transport, status, bytes, note);
         }
@@ -59,6 +64,10 @@ public final class NetProbe {
             if (SameOrigin.ready()) {
                 add(out, sink, "master", u.getKey(), "sameorg", Http.sameOriginOnly(u.getValue(), jar));
             }
+            if (DocFetch.ready()) {
+                DocFetch.Res d = DocFetch.get(u.getValue(), jar, 25000);
+                addDoc(out, sink, "master", u.getKey(), d);
+            }
         }
 
         // --- media playlist + segment + key (jo master se mile) ---
@@ -90,6 +99,9 @@ public final class NetProbe {
                 add(out, sink, "media", "player", "okhttp", Http.okhttpOnly(mediaPlayer, jar, null));
                 if (SameOrigin.ready()) {
                     add(out, sink, "media", "player", "sameorg", Http.sameOriginOnly(mediaPlayer, jar));
+                }
+                if (DocFetch.ready()) {
+                    addDoc(out, sink, "media", "player", DocFetch.get(mediaPlayer, jar, 25000));
                 }
                 if (mediaCdn != null && !mediaCdn.equals(mediaPlayer)) {
                     add(out, sink, "media", "cdn", "okhttp", Http.okhttpOnly(mediaCdn, jar, null));
@@ -155,6 +167,22 @@ public final class NetProbe {
         return out;
     }
 
+    private static void addDoc(List<Row> out, Sink sink, String what, String variant,
+                               DocFetch.Res d) {
+        Row row = new Row();
+        row.what = what;
+        row.variant = variant;
+        row.transport = "docnav";
+        row.status = d.status;
+        row.bytes = d.body == null ? 0 : d.body.length;
+        row.preview = preview(d.text, d.status);
+        if (d.note != null && !d.note.isEmpty()) {
+            row.note = d.note.substring(0, Math.min(28, d.note.length()));
+        }
+        out.add(row);
+        if (sink != null) sink.onRow(row);
+    }
+
     private static void add(List<Row> out, Sink sink, String what, String variant,
                             String transport, Http.Res r) {
         Row row = new Row();
@@ -163,9 +191,40 @@ public final class NetProbe {
         row.transport = transport;
         row.status = r.status;
         row.bytes = r.body == null ? 0 : r.body.length;
+        row.preview = preview(r.text, r.status);
         if (r.error != null && !r.error.isEmpty()) row.note = r.error.substring(0, Math.min(28, r.error.length()));
         out.add(row);
         if (sink != null) sink.onRow(row);
+    }
+
+    /**
+     * Body ka nichod. 502 ka jawab yahin chhupa hota hai (6458 B me), aur master
+     * (494 B) me asli variant URL. Inhe padhe bina koi fix guess hi hoga.
+     */
+    private static String preview(String text, int status) {
+        if (text == null || text.isEmpty()) return "";
+        try {
+            if (text.contains("#EXTM3U")) {
+                StringBuilder sb = new StringBuilder();
+                for (String raw : text.replace("\r", "").split("\n")) {
+                    String l = raw.trim();
+                    if (l.startsWith("#EXT-X-STREAM-INF:") || l.startsWith("#EXT-X-KEY:")
+                            || (!l.isEmpty() && !l.startsWith("#"))) {
+                        sb.append(l.length() > 110 ? l.substring(0, 110) : l).append(" | ");
+                        if (sb.length() > 300) break;
+                    }
+                }
+                return sb.length() == 0 ? "(m3u8, koi variant line nahi)" : sb.toString();
+            }
+            if (status >= 400) {
+                String t = text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
+                return t.length() > 260 ? t.substring(0, 260) : t;
+            }
+            String t = text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
+            return t.length() > 120 ? t.substring(0, 120) : t;
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private static String abs(String base, String rel) {
