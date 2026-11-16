@@ -212,12 +212,18 @@ jobs:
       - name: Locate APKs
         id: apks
         run: |
-          set -e
-          ls -la android/app/build/outputs/apk/debug/ android/app/build/outputs/apk/release/
-          cp android/app/build/outputs/apk/debug/app-debug.apk lecture-saver-${{ inputs.version_name || '2.0' }}-debug.apk
-          cp android/app/build/outputs/apk/release/app-release.apk lecture-saver-${{ inputs.version_name || '2.0' }}.apk
-          ls -la *.apk
-          echo "ok=1" >> $GITHUB_OUTPUT
+          set +e
+          echo "---- debug dir ----"
+          ls -la android/app/build/outputs/apk/debug/ || true
+          echo "---- release dir ----"
+          ls -la android/app/build/outputs/apk/release/ || true
+          # naam badal sakta hai (debug-signed release me app-release.apk / app-release-unsigned)
+          REL=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
+          DBG=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -1)
+          [ -n "$DBG" ] && cp "$DBG" "lecture-saver-${{ inputs.version_name || '2.0' }}-debug.apk"
+          [ -n "$REL" ] && cp "$REL" "lecture-saver-${{ inputs.version_name || '2.0' }}.apk"
+          ls -la *.apk || true
+          if ls *.apk >/dev/null 2>&1; then echo "ok=1" >> $GITHUB_OUTPUT; else echo "ok=0" >> $GITHUB_OUTPUT; fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
