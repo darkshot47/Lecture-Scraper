@@ -181,6 +181,19 @@ public final class MediaRelay {
             if (cdn != null && !cdn.equals(url)) cands.add(cdn);
         }
         for (String c : cands) {
+            if (DocFetch.ready()) {
+                DocFetch.Res d = DocFetch.get(c, cookie, 25000);
+                if (d.ok()) {
+                    say("  ✓ docnav: " + Origin.host(c));
+                    Downloader.Resp out = new Downloader.Resp();
+                    out.status = d.status;
+                    out.body = d.body;
+                    out.text = d.text;
+                    return out;
+                }
+                say("  ✗ docnav " + Origin.host(c) + " -> " + d.status
+                        + (d.note.isEmpty() ? "" : " " + d.note));
+            }
             if (SameOrigin.ready()) {
                 Downloader.Resp s = SameOrigin.get(c, cookie, 25000);
                 if (s.status == 200) {
@@ -309,6 +322,10 @@ public final class MediaRelay {
             if (videoKey != null) {
                 String cdn = Origin.toCdnOn(url, videoKey, Origin.cdnBase(cookie));
                 if (cdn != null) u = attempt == 0 ? url : cdn;
+            }
+            if (DocFetch.ready()) {
+                DocFetch.Res d = DocFetch.get(u, cookie, 20000);
+                if (d.ok()) return d.body;
             }
             if (SameOrigin.ready()) {
                 Downloader.Resp s = SameOrigin.get(u, cookie, 20000);

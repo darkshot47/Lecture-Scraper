@@ -71,6 +71,7 @@ public class PlayerActivity extends Activity {
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(1, 1);
         root.addView(soView, lp);
         SameOrigin.attach(soView);
+        DocFetch.attach(new WebView(this));   // document navigation transport
 
         if (url == null || url.isEmpty()) {
             toast("video URL nahi mila");
