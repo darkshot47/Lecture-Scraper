@@ -96,16 +96,18 @@ jobs:
       - name: Assemble debug APK
         working-directory: android
         run: |
-          set -o pipefail
           ./gradlew :app:assembleDebug --no-daemon 2>&1 | tee /tmp/build.log
+          echo "---- compiler lines ----"
           grep -E "^e: |error: |FAILURE:" /tmp/build.log | head -60 || true
+          tail -5 /tmp/build.log || true
 
       - name: Assemble release APK (debug-signed)
         working-directory: android
         run: |
-          set -o pipefail
           ./gradlew :app:assembleRelease --no-daemon 2>&1 | tee /tmp/build-rel.log
+          echo "---- compiler lines ----"
           grep -E "^e: |error: |FAILURE:" /tmp/build-rel.log | head -60 || true
+          tail -5 /tmp/build-rel.log || true
 
       - name: Report compile errors (agar fail hue)
         if: failure()
