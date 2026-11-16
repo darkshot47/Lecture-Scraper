@@ -125,10 +125,20 @@ jobs:
             # har line apna tag: pure ASCII, koi & / ? nahi
             # poora diag line: sirf alnum + dash (100 chars) — tag me koi galat char na aaye
             SLUG=$(printf '%s' "$line" | tr -cd 'A-Za-z0-9' | tail -c 100)
-            gh release create "e$N-43707173372-$SLUG" --title "err $N: ${{ github.run_id }}" \
+            gh release create "e$N-${{ github.run_id }}-$SLUG" --title "err $N: ${{ github.run_id }}" \
               --notes "log: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
           done < /tmp/lines.txt
           echo "posted $N error lines"
+          {
+            echo "### Build errors"
+            echo '```'
+            cat /tmp/lines.txt
+            echo '```'
+            echo "### tail of build log"
+            echo '```'
+            tail -30 /tmp/build.log 2>/dev/null
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify APK contents
         id: verify
