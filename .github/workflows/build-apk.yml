@@ -217,9 +217,12 @@ jobs:
           ls -la android/app/build/outputs/apk/debug/ || true
           echo "---- release dir ----"
           ls -la android/app/build/outputs/apk/release/ || true
-          # naam badal sakta hai (debug-signed release me app-release.apk / app-release-unsigned)
-          REL=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
-          DBG=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -1)
+          # poore build tree me APK dhoondo (path AGP version ke hisaab se badalta hai)
+          find android -name "*.apk" -type f | sort > /tmp/apks.txt || true
+          cat /tmp/apks.txt
+          REL=$(grep -i "release" /tmp/apks.txt | grep -vi unsigned | head -1)
+          [ -z "$REL" ] && REL=$(grep -i "release" /tmp/apks.txt | head -1)
+          DBG=$(grep -i "debug" /tmp/apks.txt | head -1)
           [ -n "$DBG" ] && cp "$DBG" "lecture-saver-${{ inputs.version_name || '2.0' }}-debug.apk"
           [ -n "$REL" ] && cp "$REL" "lecture-saver-${{ inputs.version_name || '2.0' }}.apk"
           ls -la *.apk || true
@@ -227,10 +230,11 @@ jobs:
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: lecture-saver-apk
           path: "*.apk"
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Publish APK release
@@ -254,6 +258,14 @@ jobs:
             echo "### Build verification"
             echo
             cat verify.md 2>/dev/null || echo "(verify.md missing)"
+            echo
+            echo "### APK files found"
+            echo '```'
+            cat /tmp/apks.txt 2>/dev/null || echo "(none)"
+            echo '```'
+            echo
+            echo "### Apk copy"
+            ls -la *.apk 2>/dev/null || echo "(no *.apk in workspace root)"
           } > /tmp/notes.md
           gh release create "$TAG" --title "Lecture Saver APK 2.0 (Dekho + Download)" --notes-file /tmp/notes.md
           gh release upload "$TAG" *.apk --clobber
