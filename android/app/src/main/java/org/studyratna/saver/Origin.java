@@ -182,8 +182,8 @@ public final class Origin {
                 // value URL-encoded base64 JSON hoti hai
                 String decoded = null;
                 try {
-                    decoded = new String(java.util.Base64.decode(
-                            android.net.Uri.decode(val), java.util.Base64.DEFAULT),
+                    decoded = new String(android.util.Base64.decode(
+                            android.net.Uri.decode(val), android.util.Base64.DEFAULT),
                             java.nio.charset.StandardCharsets.UTF_8);
                 } catch (Exception e) {
                     decoded = val;
